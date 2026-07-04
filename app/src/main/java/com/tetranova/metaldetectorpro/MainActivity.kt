@@ -42,15 +42,7 @@ class MainActivity : ComponentActivity() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                    else
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) as? UsbDevice
-                    device?.let {
-                        Log.d("USB", "USB device attached: ${it.deviceName}")
-                        requestUsbPermission(it)
-                    }
+                    handleUsbIntentInternal(intent)
                 }
                 "com.tetranova.metaldetectorpro.USB_PERMISSION" -> {
                     val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
@@ -88,13 +80,17 @@ class MainActivity : ComponentActivity() {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction("com.tetranova.metaldetectorpro.USB_PERMISSION")
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(usbReceiver, filter)
+
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
+                registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            }
+            else -> {
+                registerReceiver(usbReceiver, filter)
+            }
         }
 
-        intent?.let { handleUsbIntent(it) }
+        intent?.let { handleUsbIntentInternal(it) }
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
@@ -103,15 +99,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun handleUsbIntent(intent: Intent) {
-        if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-            val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-            else
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) as? UsbDevice
-            device?.let {
-                requestUsbPermission(it)
+    private fun handleUsbIntentInternal(intent: Intent) {
+        when (intent.action) {
+            UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                else
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) as? UsbDevice
+                device?.let {
+                    requestUsbPermission(it)
+                }
             }
         }
     }
@@ -162,7 +160,8 @@ fun MainContent(vm: DetectorViewModelV2) {
 
     LaunchedEffect(isMetalDetecting) {
         if (isMetalDetecting) {
-            wakeLock.acquire(600_000L)
+            // FIX: rimosso timeout di 10 minuti (600_000L)
+            wakeLock.acquire()
         } else {
             if (wakeLock.isHeld) wakeLock.release()
         }
@@ -212,7 +211,6 @@ fun MainContent(vm: DetectorViewModelV2) {
                     },
                     modifier = Modifier.padding(horizontal = 12.dp)
                 )
-                // NUOVA VOCE
                 NavigationDrawerItem(
                     label = { Text("📊 Dati grezzi ESP32") },
                     selected = navController.currentDestination?.route == "rawdata",
@@ -249,7 +247,6 @@ fun MainContent(vm: DetectorViewModelV2) {
                     composable("commands") {
                         CommandsScreen(vm = vm)
                     }
-                    // NUOVA ROUTE
                     composable("rawdata") {
                         RawDataScreen(vm)
                     }

@@ -14,7 +14,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import android.widget.Toast
 
 enum class CommandType { ACTION, INT_RANGE, FLOAT_RANGE }
 
@@ -38,7 +37,6 @@ fun CommandsScreen(vm: DetectorViewModelV2) {
     val connectionStatus by vm.connectionStatus.collectAsState()
     val isConnected = connectionStatus is ConnectionStatus.Connected
     val scope = rememberCoroutineScope()
-
     var showDialog by remember { mutableStateOf(false) }
     var selectedCommand by remember { mutableStateOf<CommandDef?>(null) }
     var inputValue by remember { mutableStateOf("") }
@@ -48,17 +46,19 @@ fun CommandsScreen(vm: DetectorViewModelV2) {
         listOf(
             CommandDef(id = "freq", name = "Frequenza TX", description = "Frequenza di lavoro della bobina",
                 command = "SETFREQ", type = CommandType.INT_RANGE, range = 1000..50000, unit = "Hz",
-                isLocal = false, currentValueProvider = { vm.params.frequency.toInt() }),
+                isLocal = false, currentValueProvider = { vm.params.frequency.toInt() },
+                onValueChanged = { newVal -> vm.updateFrequency((newVal as Int).toFloat()) }),
             CommandDef(id = "duty", name = "Duty Cycle", description = "Percentuale duty cycle TX (10-90%)",
                 command = "SETDUTY", type = CommandType.INT_RANGE, range = 10..90, unit = "%",
-                isLocal = false, currentValueProvider = { 40 }),
+                isLocal = false, currentValueProvider = { vm.dutyCycle },
+                onValueChanged = { newVal -> vm.updateDutyCycle(newVal as Int) }),
             CommandDef(id = "calibra", name = "Calibrazione", description = "Avvia calibrazione vettoriale I/Q",
                 command = "CALIBRATE", type = CommandType.ACTION, isLocal = false),
             CommandDef(id = "reboot", name = "Riavvia ESP32", description = "Riavvia il microcontrollore",
                 command = "REBOOT", type = CommandType.ACTION, isLocal = false),
             CommandDef(id = "sens", name = "Sensibilità", description = "Regola la sensibilità vettoriale (1-10)",
                 command = "set sens", type = CommandType.INT_RANGE, range = 1..10, isLocal = true,
-                currentValueProvider = { (10f - (vm.vectorProcessor.K_VECT - 1.2f) * (9f / 4.8f)).toInt().coerceIn(1, 10) },
+                currentValueProvider = { (10f - (vm.vectorProcessor.kVect - 1.2f) * (9f / 4.8f)).toInt().coerceIn(1, 10) },
                 onValueChanged = { newVal -> vm.updateSensAmpiezza((newVal as Int).toFloat()) }),
             CommandDef(id = "disc", name = "Discriminazione", description = "Soglia angolare per metalli ferrosi (0.5°–5.0°)",
                 command = "set disc", type = CommandType.FLOAT_RANGE, rangeFloat = 0.5f..5.0f, isLocal = true,
@@ -83,7 +83,7 @@ fun CommandsScreen(vm: DetectorViewModelV2) {
                     } else {
                         OutlinedTextField(
                             value = inputValue,
-                            onValueChange = { inputValue = it; inputError = validateInput(it, cmd) },
+                            onValueChange = { inputValue = it },
                             label = {
                                 Text(when (cmd.type) {
                                     CommandType.INT_RANGE -> "Valore (${cmd.range!!.first}-${cmd.range.last})"
@@ -92,7 +92,8 @@ fun CommandsScreen(vm: DetectorViewModelV2) {
                                 })
                             },
                             isError = inputError != null,
-                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
                         )
                         if (inputError != null) Text(text = inputError!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
@@ -101,21 +102,34 @@ fun CommandsScreen(vm: DetectorViewModelV2) {
             confirmButton = {
                 TextButton(
                     onClick = {
-                        if (cmd.type == CommandType.ACTION || (inputError == null && inputValue.isNotBlank())) {
+                        val validationError = if (cmd.type != CommandType.ACTION) validateInput(inputValue, cmd) else null
+                        if (validationError != null) {
+                            inputError = validationError
+                            return@TextButton
+                        }
+
+                        if (cmd.type == CommandType.ACTION || inputValue.isNotBlank()) {
                             executeCommand(cmd, if (cmd.type != CommandType.ACTION) inputValue else null, vm, isConnected, scope)
                             showDialog = false
                         }
                     },
-                    enabled = cmd.type == CommandType.ACTION || (inputError == null && inputValue.isNotBlank())
+                    enabled = cmd.type == CommandType.ACTION || inputValue.isNotBlank()
                 ) { Text("Conferma") }
             },
             dismissButton = { TextButton(onClick = { showDialog = false }) { Text("Annulla") } }
         )
     }
 
-    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         item {
-            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(text = "Comandi Metal Detector", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
 
@@ -147,16 +161,20 @@ fun CommandsScreen(vm: DetectorViewModelV2) {
         }
 
         items(commands) { cmd ->
-            CommandCard(command = cmd, isConnected = isConnected, onAction = {
-                selectedCommand = cmd
-                inputValue = when (val c = cmd.currentValueProvider()) {
-                    is Float -> c.toString()
-                    is Int -> c.toString()
-                    else -> ""
+            CommandCard(
+                command = cmd,
+                isConnected = isConnected,
+                onAction = {
+                    selectedCommand = cmd
+                    inputValue = when (val c = cmd.currentValueProvider()) {
+                        is Float -> c.toString()
+                        is Int -> c.toString()
+                        else -> ""
+                    }
+                    inputError = validateInput(inputValue, cmd)
+                    showDialog = true
                 }
-                inputError = validateInput(inputValue, cmd)
-                showDialog = true
-            })
+            )
         }
     }
 }
@@ -184,20 +202,28 @@ private fun executeCommand(cmd: CommandDef, inputValue: String?, vm: DetectorVie
     when (cmd.type) {
         CommandType.ACTION -> {
             if (cmd.isLocal) { cmd.onValueChanged?.invoke(true); vm.console.add(0, "Azione locale: ${cmd.name}") }
-            else if (isConnected) { scope.launch { vm.sendCommand(cmd.command) }; vm.console.add(0, "➡️ Inviato: ${cmd.command}") }
+            else if (isConnected) { scope.launch { vm.usb.sendCommand(cmd.command) }; vm.console.add(0, "➡️ Inviato: ${cmd.command}") }
             else vm.console.add(0, "❌ Non connesso")
         }
         CommandType.INT_RANGE -> {
             val value = inputValue?.toIntOrNull() ?: return
-            if (cmd.isLocal) cmd.onValueChanged?.invoke(value)
-            else if (isConnected) { scope.launch { vm.sendCommand("${cmd.command} $value") }; vm.console.add(0, "➡️ Inviato: ${cmd.command} $value") }
-            else vm.console.add(0, "❌ Non connesso")
+            if (cmd.isLocal) {
+                cmd.onValueChanged?.invoke(value)
+            } else if (isConnected) {
+                scope.launch { vm.usb.sendCommand("${cmd.command} $value") }
+                cmd.onValueChanged?.invoke(value)
+                vm.console.add(0, "➡️ Inviato: ${cmd.command} $value")
+            } else vm.console.add(0, "❌ Non connesso")
         }
         CommandType.FLOAT_RANGE -> {
             val value = inputValue?.toFloatOrNull() ?: return
-            if (cmd.isLocal) cmd.onValueChanged?.invoke(value)
-            else if (isConnected) { scope.launch { vm.sendCommand("${cmd.command} $value") }; vm.console.add(0, "➡️ Inviato: ${cmd.command} $value") }
-            else vm.console.add(0, "❌ Non connesso")
+            if (cmd.isLocal) {
+                cmd.onValueChanged?.invoke(value)
+            } else if (isConnected) {
+                scope.launch { vm.usb.sendCommand("${cmd.command} $value") }
+                cmd.onValueChanged?.invoke(value)
+                vm.console.add(0, "➡️ Inviato: ${cmd.command} $value")
+            } else vm.console.add(0, "❌ Non connesso")
         }
     }
 }
@@ -208,17 +234,30 @@ fun CommandCard(command: CommandDef, isConnected: Boolean, onAction: () -> Unit)
     val isEspCommand = !command.isLocal
     val isEnabled = command.isLocal || isConnected
     Card(
-        modifier = Modifier.fillMaxWidth(), onClick = { if (isEnabled) onAction() }, enabled = isEnabled,
-        colors = CardDefaults.cardColors(containerColor = if (isEspCommand) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+        modifier = Modifier.fillMaxWidth(),
+        onClick = { if (isEnabled) onAction() },
+        enabled = isEnabled,
+        colors = CardDefaults.cardColors(
+            containerColor = if (isEspCommand) MaterialTheme.colorScheme.secondaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant
+        )
     ) {
-        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(text = command.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
                     if (isEspCommand) {
                         Spacer(modifier = Modifier.width(8.dp))
-                        AssistChip(onClick = {}, label = { Text("ESP") }, leadingIcon = { Icon(Icons.Default.Settings, null, Modifier.size(16.dp)) },
-                            colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.primaryContainer))
+                        AssistChip(
+                            onClick = {},
+                            label = { Text("ESP") },
+                            leadingIcon = { Icon(Icons.Default.Settings, null, Modifier.size(16.dp)) },
+                            colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                        )
                     }
                 }
                 Text(text = command.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

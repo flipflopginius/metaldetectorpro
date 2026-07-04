@@ -1,24 +1,23 @@
 package com.tetranova.metaldetectorpro
-//TelemetryModels.kt
+
+// MODIFICA CONCORDATA: timestampMs SENZA default value.
+// Motivazione: il timestamp deve essere quello di RICEZIONE del campione dall'USB,
+// non quello di creazione dell'oggetto. Rimuovendo il default, il compilatore
+// forza chiunque crei un TelemetryData a passare esplicitamente il timestamp,
+// eliminando il rischio di usare accidentalmente un timestamp inaccurato.
 data class TelemetryData(
     val delta: Float,
     val phase: Float,
-    val vdi: Int = 0,              // ← NUOVO: valore discriminazione 0-99
-    val confidence: Float = 0f,       // ← NUOVO: confidence 0-100%
-    val metalType: String = "IDLE",   // ← NUOVO: "FERRO", "NON_FERRO", "AMBIGUO", "IDLE"
-    val isDetected: Boolean = false,  // ← NUOVO: stato detection
-    val depth: Float = 0f,            // ← NUOVO: stima profondità (cm)
-    val timestamp: Long = System.currentTimeMillis()
+    val timestampMs: Long  // ← OBBLIGATORIO, nessun default
 )
 
 data class DeviceParams(
     val battery: Float = 0f,
-    val baseline: Float = 512.0f,
-    val threshold: Float = 10.0f,
-    val groundPhase: Float = 0f,
     val frequency: Float = 0f,
-    val batteryReady: Boolean = false,
-    val transportMode: String = "BT"   // "BT" o "USB" ricevuto dal firmware
+    val transportMode: String = "UNKNOWN",
+    val baseline: Float = 0f,
+    val groundPhase: Float = 0f,
+    val batteryReady: Boolean = false
 )
 
 data class AnalysisResult(

@@ -19,8 +19,8 @@ fun ConsoleScreen(vm: DetectorViewModelV2) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    // Auto-scroll in basso quando arrivano nuovi messaggi
-    LaunchedEffect(messages.size) {
+    // FIX: trigger sull'ultimo messaggio, non sulla dimensione della lista
+    LaunchedEffect(messages.lastOrNull()) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
@@ -32,7 +32,7 @@ fun ConsoleScreen(vm: DetectorViewModelV2) {
         LazyColumn(
             modifier = Modifier.weight(1f),
             state = listState,
-            reverseLayout = false   // i più recenti in basso
+            reverseLayout = false
         ) {
             itemsIndexed(messages) { index, message ->
                 Text(

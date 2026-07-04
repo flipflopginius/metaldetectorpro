@@ -4,7 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.ArrayDeque
-import kotlin.math.*
+import kotlin.math.abs
 
 class SerialParser(
     private val telemetryFlow: MutableSharedFlow<TelemetryData>,
@@ -12,17 +12,23 @@ class SerialParser(
     private val consoleFlow: MutableSharedFlow<String>,
     private val onPong: () -> Unit = {}
 ) {
-    private var lastValidPhase: Float = 0f
-    private val PHASE_JUMP_THRESHOLD = 30f
-
     private val BATTERY_AVG_WINDOW = 4
     private val batteryWindow = ArrayDeque<Float>(BATTERY_AVG_WINDOW)
 
-    private fun normalize180(angle: Float): Float {
-        var a = angle % 360f
-        if (a > 180f) a -= 360f
-        if (a <= -180f) a += 360f
-        return a
+    @Volatile private var frequencyOverridePending = false
+    @Volatile private var frequencyOverrideValue = 0f
+    @Volatile private var frequencyOverrideUntilMs = 0L
+
+    private var lastBatchCounter: Long = -1L
+
+    // ★ Statistiche per il monitoraggio della stabilità
+    private var totalSamples = 0L
+    private var droppedBatches = 0L
+
+    fun notifyFrequencyChange(newFreq: Float) {
+        frequencyOverrideValue = newFreq
+        frequencyOverridePending = true
+        frequencyOverrideUntilMs = System.currentTimeMillis() + 3000L
     }
 
     fun parse(line: String) {
@@ -32,11 +38,38 @@ class SerialParser(
             when {
                 cleanLine.startsWith("B:") -> {
                     val payload = cleanLine.substring(2).trim()
-                    val samples = payload.split(';')
-                    val currentGroundPhase = paramsFlow.value.groundPhase
+                    val parts = payload.split(';')
 
+                    if (parts.isEmpty()) return
+
+                    val batchCounter = parts[0].toLongOrNull()
+                    if (batchCounter == null) {
+                        Log.w("Parser", "⚠️ Contatore batch non valido: '${parts[0]}'")
+                        return
+                    }
+
+                    // ★ Gestione batch persi con logica migliorata
+                    if (lastBatchCounter >= 0 && batchCounter != lastBatchCounter + 1) {
+                        val gap = (batchCounter - lastBatchCounter).toInt()
+                        droppedBatches++
+                        // Mostra solo i gap significativi (per non inondare)
+                        if (gap > 1 || droppedBatches % 10 == 0L) {
+                            consoleFlow.tryEmit("⚠️ Batch persi: gap $gap (tot: $droppedBatches)")
+                            Log.w("Parser", "⚠️ Batch persi: atteso ${lastBatchCounter + 1}, ricevuto $batchCounter (gap: $gap)")
+                        }
+                    }
+                    lastBatchCounter = batchCounter
+
+                    val batchReceiveTimeMs = System.currentTimeMillis()
+                    val samples = parts.drop(1)
+
+                    // ★ Elaborazione batch più efficiente
+                    if (samples.isEmpty()) return
+
+                    // ★ Estrai tutti i dati in un'unica passata
+                    val parsedSamples = mutableListOf<Pair<Float, Float>>()
                     for (sample in samples) {
-                        val cleanSample = sample.trimEnd('\r').trim()
+                        val cleanSample = sample.trim()
                         if (cleanSample.isEmpty()) continue
 
                         val commaIdx = cleanSample.indexOf(',')
@@ -52,72 +85,71 @@ class SerialParser(
                         if (delta.isNaN() || rawPhase.isNaN()) continue
                         if (rawPhase !in -180f..180f) continue
 
-                        var phase = rawPhase
-                        if (abs(currentGroundPhase) > 10f) {
-                            phase = normalize180(rawPhase - currentGroundPhase)
-                            if (abs(phase - lastValidPhase) > PHASE_JUMP_THRESHOLD) {
-                                phase = lastValidPhase
-                            } else {
-                                lastValidPhase = phase
-                            }
-                        }
+                        parsedSamples.add(delta to rawPhase)
+                    }
 
-                        telemetryFlow.tryEmit(
-                            TelemetryData(
-                                delta = delta,
-                                phase = phase,
-                                vdi = 0,
-                                confidence = 0f,
-                                metalType = "IDLE",
-                                isDetected = false,
-                                depth = 0f
-                            )
-                        )
+                    if (parsedSamples.isEmpty()) return
+
+                    // ★ Timestamp più preciso: campioni equidistanti
+                    // A 500 Hz → 2 ms per campione
+                    val sampleIntervalMs = 2L
+                    val batchSize = parsedSamples.size
+
+                    // ★ Calcola offset per centrare il timestamp
+                    // Usa il tempo di ricezione del batch e distribuisci i campioni
+                    val firstSampleTime = batchReceiveTimeMs - (batchSize - 1) * sampleIntervalMs
+
+                    for ((index, sample) in parsedSamples.withIndex()) {
+                        val (delta, phase) = sample
+                        val sampleTimestampMs = firstSampleTime + index * sampleIntervalMs
+
+                        telemetryFlow.tryEmit(TelemetryData(
+                            delta = delta,
+                            phase = phase,
+                            timestampMs = sampleTimestampMs
+                        ))
+                        totalSamples++
                     }
                 }
 
                 cleanLine == "PONG" -> onPong()
 
-                cleanLine == "MSG:MODE_BT" -> {
-                    // 🔄 Reset parser automatico sullo switch → risolve bug #2
-                    reset()
-                    paramsFlow.value = paramsFlow.value.copy(transportMode = "BT")
-                    consoleFlow.tryEmit("🔵 Modalità Bluetooth attiva")
-                }
                 cleanLine == "MSG:MODE_USB" -> {
-                    // 🔄 Reset parser automatico sullo switch → risolve bug #2
                     reset()
                     paramsFlow.value = paramsFlow.value.copy(transportMode = "USB")
                     consoleFlow.tryEmit("🟢 Modalità USB attiva")
                 }
 
-                cleanLine.startsWith("CALIB:") -> {
-                    val content = cleanLine.substring(6)
-                    val parts = content.split(",")
-                    val baseline = parts[0].toFloatOrNull() ?: 0f
-                    val phaseOff = if (parts.size > 1 && parts[1].startsWith("PHASE_OFF:")) {
-                        parts[1].substring(10).toFloatOrNull() ?: 0f
-                    } else 0f
-                    lastValidPhase = 0f
-                    paramsFlow.value = paramsFlow.value.copy(
-                        baseline = baseline,
-                        groundPhase = phaseOff
-                    )
-                    Log.d("Parser", "📊 Calibrazione: baseline=$baseline, phaseOff=$phaseOff")
+                cleanLine == "STATUS_ACK" -> {
+                    consoleFlow.tryEmit("✅ Status ricevuto")
+                    Log.d("Parser", "📊 Status ACK ricevuto")
                 }
 
                 cleanLine.startsWith("INF:") -> {
                     val parts = cleanLine.substring(4).split(",")
                     if (parts.size >= 2) {
                         val batteryRaw = parts[0].toFloatOrNull() ?: 0f
-                        val freq = parts[1].toFloatOrNull() ?: 0f
-                        val batteryCorrected = batteryRaw * 2.05f
+                        val freqFromEsp = parts[1].toFloatOrNull() ?: 0f
+                        val batteryCorrected = batteryRaw * 4.10f
 
                         if (batteryWindow.size >= BATTERY_AVG_WINDOW) batteryWindow.removeFirst()
                         batteryWindow.addLast(batteryCorrected)
 
                         val batteryAvg = batteryWindow.sum() / batteryWindow.size
                         val isReady = batteryWindow.size >= BATTERY_AVG_WINDOW
+
+                        val now = System.currentTimeMillis()
+                        val freq = if (frequencyOverridePending && now < frequencyOverrideUntilMs) {
+                            if (abs(freqFromEsp - frequencyOverrideValue) < 50f) {
+                                frequencyOverridePending = false
+                                freqFromEsp
+                            } else {
+                                frequencyOverrideValue
+                            }
+                        } else {
+                            frequencyOverridePending = false
+                            freqFromEsp
+                        }
 
                         paramsFlow.value = paramsFlow.value.copy(
                             battery = batteryAvg,
@@ -130,7 +162,10 @@ class SerialParser(
 
                 cleanLine.startsWith("MSG:") -> {
                     val msg = cleanLine.substring(4)
-                    consoleFlow.tryEmit("ℹ️ $msg")
+                    // ★ Filtra messaggi tecnici ripetitivi
+                    if (!msg.contains("Soglie:") && !msg.contains("groundRMS")) {
+                        consoleFlow.tryEmit("ℹ️ $msg")
+                    }
                     Log.d("Parser", "💬 MSG: $msg")
                 }
 
@@ -144,8 +179,11 @@ class SerialParser(
     }
 
     fun reset() {
-        lastValidPhase = 0f
         batteryWindow.clear()
+        frequencyOverridePending = false
+        lastBatchCounter = -1L
+        totalSamples = 0L
+        droppedBatches = 0L
         Log.d("Parser", "Parser resettato")
     }
 }

@@ -19,8 +19,8 @@ fun RawDataScreen(vm: DetectorViewModelV2) {
     val rawMessages by vm.rawDataMessages.collectAsState()
     val listState = rememberLazyListState()
 
-    // Auto-scroll in basso quando arrivano nuovi messaggi
-    LaunchedEffect(rawMessages.size) {
+    // FIX: trigger sull'ultimo messaggio, non sulla dimensione della lista
+    LaunchedEffect(rawMessages.lastOrNull()) {
         if (rawMessages.isNotEmpty()) {
             listState.animateScrollToItem(rawMessages.size - 1)
         }
@@ -42,7 +42,7 @@ fun RawDataScreen(vm: DetectorViewModelV2) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             state = listState,
-            reverseLayout = false  // i nuovi in basso
+            reverseLayout = false
         ) {
             itemsIndexed(rawMessages) { index, msg ->
                 Text(
