@@ -1,4 +1,4 @@
-package com.tetranova.metaldetectorpro
+package com.tetranova.prerex
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -9,7 +9,7 @@ import kotlin.math.PI
 import kotlin.math.sin
 
 /**
- * Motore audio aggiornato per MetalDetectorPro.
+ * Motore audio aggiornato per PreRex.
  * - Frequenza sussurro base: 100 Hz
  * - Usage: MEDIA (per massimo volume e fedeltà)
  */

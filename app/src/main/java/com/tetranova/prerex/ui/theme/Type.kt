@@ -1,4 +1,4 @@
-package com.tetranova.metaldetectorpro.ui.theme
+package com.tetranova.prerex.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle

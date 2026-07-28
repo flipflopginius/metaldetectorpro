@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "metaldetectorpro"
+rootProject.name = "prerex"
 include(":app")

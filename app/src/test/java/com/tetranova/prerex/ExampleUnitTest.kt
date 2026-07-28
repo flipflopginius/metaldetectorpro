@@ -1,4 +1,4 @@
-package com.tetranova.metaldetectorpro
+package com.tetranova.prerex
 
 import org.junit.Test
 

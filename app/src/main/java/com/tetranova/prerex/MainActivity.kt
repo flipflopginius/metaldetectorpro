@@ -1,8 +1,6 @@
-package com.tetranova.metaldetectorpro
+package com.tetranova.prerex
 
-import android.Manifest
 import android.annotation.SuppressLint
-import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -11,22 +9,16 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
-import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.navigation.compose.NavHost
@@ -38,26 +30,15 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var viewModel: DetectorViewModelV2
 
+    // Nota: la richiesta/attesa del permesso USB è gestita interamente da
+    // UsbCdcManager (che registra il proprio receiver per "USB_PERMISSION" e
+    // richiede il permesso da connect() se manca). Prima questo receiver
+    // duplicava sia la richiesta di permesso sia l'ascolto della concessione,
+    // facendo reagire due percorsi indipendenti allo stesso singolo evento.
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    handleUsbIntentInternal(intent)
-                }
-                "com.tetranova.metaldetectorpro.USB_PERMISSION" -> {
-                    val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                    else
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) as? UsbDevice
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    if (granted && device != null) {
-                        Log.d("USB", "USB permission granted")
-                        viewModel.onUsbDeviceAttached(device)
-                    } else {
-                        Log.w("USB", "USB permission denied")
-                    }
-                }
+            if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+                handleUsbIntentInternal(intent)
             }
         }
     }
@@ -78,12 +59,11 @@ class MainActivity : ComponentActivity() {
 
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
-            addAction("com.tetranova.metaldetectorpro.USB_PERMISSION")
         }
 
         when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                registerReceiver(usbReceiver, filter, RECEIVER_NOT_EXPORTED)
             }
             else -> {
                 registerReceiver(usbReceiver, filter)
@@ -107,25 +87,10 @@ class MainActivity : ComponentActivity() {
                 else
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) as? UsbDevice
-                device?.let {
-                    requestUsbPermission(it)
-                }
+                // Il controllo/richiesta del permesso è delegato a UsbCdcManager.connect(),
+                // chiamato indirettamente da onUsbDeviceAttached() -> connectToUSB().
+                device?.let { viewModel.onUsbDeviceAttached(it) }
             }
-        }
-    }
-
-    private fun requestUsbPermission(device: UsbDevice) {
-        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-        if (usbManager.hasPermission(device)) {
-            viewModel.onUsbDeviceAttached(device)
-        } else {
-            val pendingIntent = PendingIntent.getBroadcast(
-                this,
-                0,
-                Intent("com.tetranova.metaldetectorpro.USB_PERMISSION"),
-                PendingIntent.FLAG_IMMUTABLE
-            )
-            usbManager.requestPermission(device, pendingIntent)
         }
     }
 
@@ -149,27 +114,6 @@ fun MainContent(vm: DetectorViewModelV2) {
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose {
             window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
-    }
-
-    val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-    val wakeLock = remember {
-        powerManager.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, "MetalDetector:WakeLock")
-    }
-    val isMetalDetecting by vm.isMetalDetecting.collectAsState()
-
-    LaunchedEffect(isMetalDetecting) {
-        if (isMetalDetecting) {
-            // FIX: rimosso timeout di 10 minuti (600_000L)
-            wakeLock.acquire()
-        } else {
-            if (wakeLock.isHeld) wakeLock.release()
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            if (wakeLock.isHeld) wakeLock.release()
         }
     }
 
@@ -220,6 +164,15 @@ fun MainContent(vm: DetectorViewModelV2) {
                     },
                     modifier = Modifier.padding(horizontal = 12.dp)
                 )
+                NavigationDrawerItem(
+                    label = { Text("🔧 Calibrazione") },
+                    selected = navController.currentDestination?.route == "calibration",
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        navController.navigate("calibration")
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
             }
         }
     ) {
@@ -228,7 +181,10 @@ fun MainContent(vm: DetectorViewModelV2) {
                 NavHost(navController = navController, startDestination = "main") {
                     composable("main") {
                         when (connectionStatus) {
-                            is ConnectionStatus.Connected -> MainScanDisplayV2(vm = vm)
+                            is ConnectionStatus.Connected -> MainScanDisplayV2(
+                                vm = vm,
+                                onNavigateToCalibration = { navController.navigate("calibration") }
+                            )
                             is ConnectionStatus.Connecting -> {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -249,6 +205,12 @@ fun MainContent(vm: DetectorViewModelV2) {
                     }
                     composable("rawdata") {
                         RawDataScreen(vm)
+                    }
+                    composable("calibration") {
+                        CalibrationScreen(
+                            vm = vm,
+                            onBack = { navController.popBackStack() }
+                        )
                     }
                 }
             }

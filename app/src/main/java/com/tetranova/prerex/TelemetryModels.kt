@@ -1,4 +1,4 @@
-package com.tetranova.metaldetectorpro
+package com.tetranova.prerex
 
 // MODIFICA CONCORDATA: timestampMs SENZA default value.
 // Motivazione: il timestamp deve essere quello di RICEZIONE del campione dall'USB,

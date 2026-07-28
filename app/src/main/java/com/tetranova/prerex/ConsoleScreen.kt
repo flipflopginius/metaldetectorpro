@@ -1,8 +1,8 @@
-package com.tetranova.metaldetectorpro
+package com.tetranova.prerex
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -11,13 +11,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.launch
 
 @Composable
 fun ConsoleScreen(vm: DetectorViewModelV2) {
     val messages = vm.console
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
 
     // FIX: trigger sull'ultimo messaggio, non sulla dimensione della lista
     LaunchedEffect(messages.lastOrNull()) {
@@ -34,7 +32,7 @@ fun ConsoleScreen(vm: DetectorViewModelV2) {
             state = listState,
             reverseLayout = false
         ) {
-            itemsIndexed(messages) { index, message ->
+            items(messages) { message ->
                 Text(
                     text = message,
                     modifier = Modifier.padding(4.dp),

@@ -1,15 +1,15 @@
-package com.tetranova.metaldetectorpro
+package com.tetranova.prerex
 
 import android.util.Log
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.ArrayDeque
 import kotlin.math.abs
 
 class SerialParser(
-    private val telemetryFlow: MutableSharedFlow<TelemetryData>,
+    private val telemetryChannel: Channel<TelemetryData>,
     private val paramsFlow: MutableStateFlow<DeviceParams>,
-    private val consoleFlow: MutableSharedFlow<String>,
+    private val consoleChannel: Channel<String>,
     private val onPong: () -> Unit = {}
 ) {
     private val BATTERY_AVG_WINDOW = 4
@@ -21,9 +21,21 @@ class SerialParser(
 
     private var lastBatchCounter: Long = -1L
 
-    // ★ Statistiche per il monitoraggio della stabilità
+    // Statistiche per il monitoraggio della stabilità
     private var totalSamples = 0L
     private var droppedBatches = 0L
+
+    // Garantisce che i timestamp siano strettamente crescenti ed evita sovrapposizioni
+    private var lastEmittedTimestampMs: Long = 0L
+
+    // Despike: mediana a 3 campioni.
+    private var rawPrev1I: Float? = null   // delta n-1
+    private var rawPrev1Q: Float? = null   // phase n-1
+    private var rawPrev2I: Float? = null   // delta n-2
+    private var rawPrev2Q: Float? = null   // phase n-2
+
+    private fun median3(a: Float, b: Float, c: Float): Float =
+        maxOf(minOf(a, b), minOf(maxOf(a, b), c))
 
     fun notifyFrequencyChange(newFreq: Float) {
         frequencyOverrideValue = newFreq
@@ -33,7 +45,6 @@ class SerialParser(
 
     fun parse(line: String) {
         val cleanLine = line.trimEnd('\r').trim()
-        Log.d("Parser", "📥 RAW: '$cleanLine'")
         try {
             when {
                 cleanLine.startsWith("B:") -> {
@@ -48,66 +59,99 @@ class SerialParser(
                         return
                     }
 
-                    // ★ Gestione batch persi con logica migliorata
+                    // FIX 1 & 3: Gestione corretta dei batch persi e reset del filtro mediana
                     if (lastBatchCounter >= 0 && batchCounter != lastBatchCounter + 1) {
-                        val gap = (batchCounter - lastBatchCounter).toInt()
-                        droppedBatches++
-                        // Mostra solo i gap significativi (per non inondare)
-                        if (gap > 1 || droppedBatches % 10 == 0L) {
-                            consoleFlow.tryEmit("⚠️ Batch persi: gap $gap (tot: $droppedBatches)")
-                            Log.w("Parser", "⚠️ Batch persi: atteso ${lastBatchCounter + 1}, ricevuto $batchCounter (gap: $gap)")
+                        val gap = (batchCounter - lastBatchCounter - 1).toInt()
+                        if (gap > 0) {
+                            droppedBatches += gap
+
+                            // RESET FONDAMENTALE: Se abbiamo perso campioni, interrompiamo
+                            // la continuità del filtro mediana per evitare valori distorti!
+                            rawPrev1I = null
+                            rawPrev1Q = null
+                            rawPrev2I = null
+                            rawPrev2Q = null
+
+                            if (gap > 1 || droppedBatches % 10 == 0L) {
+                                consoleChannel.trySend("⚠️ Batch persi: $gap (tot persi: $droppedBatches)")
+                                Log.w("Parser", "⚠️ Batch persi: atteso ${lastBatchCounter + 1}, ricevuto $batchCounter (gap: $gap)")
+                            }
                         }
                     }
                     lastBatchCounter = batchCounter
 
                     val batchReceiveTimeMs = System.currentTimeMillis()
-                    val samples = parts.drop(1)
 
-                    // ★ Elaborazione batch più efficiente
-                    if (samples.isEmpty()) return
+                    if (parts.size <= 1) return
 
-                    // ★ Estrai tutti i dati in un'unica passata
-                    val parsedSamples = mutableListOf<Pair<Float, Float>>()
-                    for (sample in samples) {
-                        val cleanSample = sample.trim()
+                    // Processa i campioni senza usare drop(1) per ridurre le allocazioni
+                    val parsedDeltas = FloatArray(parts.size - 1)
+                    val parsedPhases = FloatArray(parts.size - 1)
+                    var validCount = 0
+
+                    for (i in 1 until parts.size) {
+                        val cleanSample = parts[i].trim()
                         if (cleanSample.isEmpty()) continue
 
                         val commaIdx = cleanSample.indexOf(',')
                         if (commaIdx <= 0 || commaIdx == cleanSample.lastIndex) continue
 
-                        val deltaStr = cleanSample.substring(0, commaIdx).trim()
-                        val phaseStr = cleanSample.substring(commaIdx + 1).trim()
-
-                        val delta = deltaStr.toFloatOrNull()
-                        val rawPhase = phaseStr.toFloatOrNull()
+                        val delta = cleanSample.substring(0, commaIdx).trim().toFloatOrNull()
+                        val rawPhase = cleanSample.substring(commaIdx + 1).trim().toFloatOrNull()
 
                         if (delta == null || rawPhase == null) continue
                         if (delta.isNaN() || rawPhase.isNaN()) continue
                         if (rawPhase !in -180f..180f) continue
+                        if (delta !in 0f..2000f) continue
 
-                        parsedSamples.add(delta to rawPhase)
+                        // Filter Mediana 3 senza allocazioni di oggetti Pair
+                        val p1I = rawPrev1I
+                        val p1Q = rawPrev1Q
+                        val p2I = rawPrev2I
+                        val p2Q = rawPrev2Q
+
+                        val outDelta: Float
+                        val outPhase: Float
+
+                        if (p1I != null && p2I != null && p1Q != null && p2Q != null) {
+                            outDelta = median3(p2I, p1I, delta)
+                            outPhase = median3(p2Q, p1Q, rawPhase)
+                        } else {
+                            outDelta = delta
+                            outPhase = rawPhase
+                        }
+
+                        rawPrev2I = rawPrev1I
+                        rawPrev2Q = rawPrev1Q
+                        rawPrev1I = delta
+                        rawPrev1Q = rawPhase
+
+                        parsedDeltas[validCount] = outDelta
+                        parsedPhases[validCount] = outPhase
+                        validCount++
                     }
 
-                    if (parsedSamples.isEmpty()) return
+                    if (validCount == 0) return
 
-                    // ★ Timestamp più preciso: campioni equidistanti
-                    // A 500 Hz → 2 ms per campione
-                    val sampleIntervalMs = 2L
-                    val batchSize = parsedSamples.size
+                    // FIX 2: Calcolo Timestamp Monotonico Garantito
+                    val sampleIntervalMs = 2L // 500 Hz
+                    var currentTimestampMs = batchReceiveTimeMs - (validCount - 1) * sampleIntervalMs
 
-                    // ★ Calcola offset per centrare il timestamp
-                    // Usa il tempo di ricezione del batch e distribuisci i campioni
-                    val firstSampleTime = batchReceiveTimeMs - (batchSize - 1) * sampleIntervalMs
+                    // Se il buffer seriale accumula ritardo, garantiamo che il timestamp non torni mai indietro
+                    if (currentTimestampMs <= lastEmittedTimestampMs) {
+                        currentTimestampMs = lastEmittedTimestampMs + sampleIntervalMs
+                    }
 
-                    for ((index, sample) in parsedSamples.withIndex()) {
-                        val (delta, phase) = sample
-                        val sampleTimestampMs = firstSampleTime + index * sampleIntervalMs
+                    for (i in 0 until validCount) {
+                        val sampleTime = currentTimestampMs + (i * sampleIntervalMs)
 
-                        telemetryFlow.tryEmit(TelemetryData(
-                            delta = delta,
-                            phase = phase,
-                            timestampMs = sampleTimestampMs
+                        telemetryChannel.trySend(TelemetryData(
+                            delta = parsedDeltas[i],
+                            phase = parsedPhases[i],
+                            timestampMs = sampleTime
                         ))
+
+                        lastEmittedTimestampMs = sampleTime
                         totalSamples++
                     }
                 }
@@ -117,11 +161,11 @@ class SerialParser(
                 cleanLine == "MSG:MODE_USB" -> {
                     reset()
                     paramsFlow.value = paramsFlow.value.copy(transportMode = "USB")
-                    consoleFlow.tryEmit("🟢 Modalità USB attiva")
+                    consoleChannel.trySend("🟢 Modalità USB attiva")
                 }
 
                 cleanLine == "STATUS_ACK" -> {
-                    consoleFlow.tryEmit("✅ Status ricevuto")
+                    consoleChannel.trySend("✅ Status ricevuto")
                     Log.d("Parser", "📊 Status ACK ricevuto")
                 }
 
@@ -130,7 +174,7 @@ class SerialParser(
                     if (parts.size >= 2) {
                         val batteryRaw = parts[0].toFloatOrNull() ?: 0f
                         val freqFromEsp = parts[1].toFloatOrNull() ?: 0f
-                        val batteryCorrected = batteryRaw * 4.10f
+                        val batteryCorrected = batteryRaw * 4.39f
 
                         if (batteryWindow.size >= BATTERY_AVG_WINDOW) batteryWindow.removeFirst()
                         batteryWindow.addLast(batteryCorrected)
@@ -162,9 +206,8 @@ class SerialParser(
 
                 cleanLine.startsWith("MSG:") -> {
                     val msg = cleanLine.substring(4)
-                    // ★ Filtra messaggi tecnici ripetitivi
                     if (!msg.contains("Soglie:") && !msg.contains("groundRMS")) {
-                        consoleFlow.tryEmit("ℹ️ $msg")
+                        consoleChannel.trySend("ℹ️ $msg")
                     }
                     Log.d("Parser", "💬 MSG: $msg")
                 }
@@ -184,6 +227,11 @@ class SerialParser(
         lastBatchCounter = -1L
         totalSamples = 0L
         droppedBatches = 0L
+        lastEmittedTimestampMs = 0L
+        rawPrev1I = null
+        rawPrev1Q = null
+        rawPrev2I = null
+        rawPrev2Q = null
         Log.d("Parser", "Parser resettato")
     }
 }

@@ -5,12 +5,12 @@ plugins {
 }
 
 android {
-    namespace = "com.tetranova.metaldetectorpro"
+    namespace = "com.tetranova.prerex"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.tetranova.metaldetectorpro"
-        minSdk = 24
+        applicationId = "com.tetranova.prerex"
+        minSdk = 29
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
