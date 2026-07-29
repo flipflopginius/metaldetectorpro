@@ -369,9 +369,9 @@ fun IQPlotWidget(
     threshold: Float,
     exitThreshold: Float,
     groundCenter: IQVector,
+    modifier: Modifier = Modifier,
     vectorDistance: Float = 0f,
-    relativeAngleDeg: Float = 0f,
-    modifier: Modifier = Modifier
+    relativeAngleDeg: Float = 0f
 ) {
     val trail = remember { mutableListOf<IQVector>() }
     var redrawTrigger by remember { mutableIntStateOf(0) }
@@ -483,8 +483,8 @@ fun IQPlotWidget(
 @Composable
 fun MainScanDisplayV2(
     vm: DetectorViewModelV2,
-    onNavigateToCalibration: () -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onNavigateToCalibration: () -> Unit = {}
 ) {
     val res = vm.analysis
     val params = vm.params

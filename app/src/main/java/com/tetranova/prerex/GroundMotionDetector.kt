@@ -467,13 +467,6 @@ class GroundMotionDetector(context: Context) : SensorEventListener {
         }
     }
 
-    /** Mantenuto per compatibilità con eventuali chiamate esistenti: ora restituisce lo STA. */
-    fun getFilteredSpeed(): Float = sta
-
-    /** Mantenuto per compatibilità: ora restituisce i rapporti ON/OFF invece delle vecchie
-     *  soglie assolute. Per la diagnostica completa usare getAdaptiveDiagnostics(). */
-    fun getThresholds(): Pair<Float, Float> = Pair(ratioOn, ratioOff)
-
     /** FIX: nuovo metodo diagnostico - espone STA, LTA e rapporto correnti, utile per
      *  loggare/verificare il comportamento del trigger adattivo con dati reali invece di
      *  ipotesi teoriche. */

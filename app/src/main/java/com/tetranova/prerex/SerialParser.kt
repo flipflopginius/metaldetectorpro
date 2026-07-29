@@ -22,7 +22,6 @@ class SerialParser(
     private var lastBatchCounter: Long = -1L
 
     // Statistiche per il monitoraggio della stabilità
-    private var totalSamples = 0L
     private var droppedBatches = 0L
 
     // Garantisce che i timestamp siano strettamente crescenti ed evita sovrapposizioni
@@ -152,7 +151,6 @@ class SerialParser(
                         ))
 
                         lastEmittedTimestampMs = sampleTime
-                        totalSamples++
                     }
                 }
 
@@ -225,7 +223,6 @@ class SerialParser(
         batteryWindow.clear()
         frequencyOverridePending = false
         lastBatchCounter = -1L
-        totalSamples = 0L
         droppedBatches = 0L
         lastEmittedTimestampMs = 0L
         rawPrev1I = null

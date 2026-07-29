@@ -3,7 +3,6 @@ package com.tetranova.prerex
 import android.app.Application
 import android.content.ContentValues
 import android.hardware.usb.UsbDevice
-import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.Toast
@@ -14,6 +13,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlin.math.*
 import kotlin.time.Duration.Companion.milliseconds
+import java.util.Locale
 
 // =============================================================
 // ENUM STATI AUTO TRACKING
@@ -46,12 +46,8 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
     var vectorResult by mutableStateOf<VectorResult?>(null)
     var iqCurrent by mutableStateOf(IQVector(0f, 0f))
     var iqBaseline by mutableStateOf(IQVector(0f, 0f))
-    var normalizedDistance by mutableFloatStateOf(0f)
-
     val console = mutableStateListOf<String>()
     var cmd by mutableStateOf("    ")
-    var groundAngleDeg by mutableFloatStateOf(0f)
-        private set
 
     val historicalData = mutableStateListOf<Pair<Float, Float>>()
     val phaseHistogram = mutableStateListOf<Float>()
@@ -60,9 +56,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
     var terrainMineralization by mutableFloatStateOf(0f)
     var terrainReactivity by mutableFloatStateOf(0f)
     var terrainStability by mutableFloatStateOf(0f)
-
-    private val _isMetalDetecting = MutableStateFlow(false)
-    val isMetalDetecting = _isMetalDetecting.asStateFlow()
 
     var sensAmpiezza by mutableFloatStateOf(10f)
         private set
@@ -92,7 +85,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
     // sostituto assoluto, perché groundPhaseOffsetDeg vive in un dominio (-180..180)
     // diverso da quello dello slider.
     private var calibratedPhaseOffsetDeg = 0f
-    var pumpingMotionDetected by mutableStateOf(false)
 
     // ===== VISUALIZZAZIONE LIVE DEL PUMPING =====
     // Riusa esattamente lo stesso IQPlotWidget già usato nella schermata principale
@@ -103,8 +95,8 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
     var pumpingCurrentSample by mutableStateOf(IQVector.ZERO)
     var pumpingBaseline by mutableStateOf(IQVector.ZERO)
     var pumpingDotAccepted by mutableStateOf(true)
-    var pumpingAcceptedCount by mutableStateOf(0)
-    var pumpingRejectedCount by mutableStateOf(0)
+    var pumpingAcceptedCount by mutableIntStateOf(0)
+    var pumpingRejectedCount by mutableIntStateOf(0)
         private set
 
     private val _rawDataMessages = MutableStateFlow<List<String>>(emptyList())
@@ -125,8 +117,13 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
     private var lastRecordedSampleMs = 0L
     private val recordSampleIntervalMs = 10L // 100 Hz
     private val recordingRows = mutableListOf<String>()
-    private val _isRecording = MutableStateFlow(false)
-    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
+
+    // Stato osservabile per la UI: -1 = nessuna registrazione in corso, altrimenti
+    // secondi rimanenti. Senza questo la UI non ha modo di sapere se/quanto sta
+    // ancora registrando (il bottone restava sempre con l'etichetta statica).
+    private val _recordingSecondsRemaining = MutableStateFlow(-1)
+    val recordingSecondsRemaining: StateFlow<Int> = _recordingSecondsRemaining.asStateFlow()
+    private var lastRecordingCountdownUpdateMs = 0L
 
 
     private var airBaseline = IQVector.ZERO
@@ -157,7 +154,7 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
 
     // ===== LOGGING PERIODICO STATUS =====
     private var lastStatusLogMs = 0L
-    private val STATUS_LOG_INTERVAL_MS = 1000L   // 1 secondo
+    private val statusLogIntervalMs = 1000L   // 1 secondo
 
     private val depthAnalyzer = DepthAnalyzer()
 
@@ -231,8 +228,19 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
         // entrambi i percorsi li referenziano, non li ridefiniscono.
         const val NOISE_TO_ENTER_THRESHOLD_MULTIPLIER = 3.5f
         const val EXIT_THRESHOLD_RATIO = 0.6f
-        // FIX SCALA ADC (provvisorio, vedi commenti inline): range allargato per non
-        // distorcere rms*3.5 in attesa di dati reali di log per la taratura definitiva.
+        // FIX (ridisegno): questo clamp NON è più il meccanismo che tiene la soglia sopra il
+        // rumore reale — quel compito è ora di VectorProcessor.adaptiveNoiseFloor, che osserva
+        // detectionMagnitude dal vivo e si adatta, invece di un numero fisso scelto a tavolino
+        // su un CSV di una sola sessione (il precedente valore 12f, tarato solo su kVect
+        // 1,0-1,8, dava sensibilità scarsa agli estremi dello slider — sintomo esattamente di
+        // un numero fisso che non può adattarsi). Lo slider di sensibilità non viene comunque
+        // mai usato in condizioni reali (solo per i test diagnostici che hanno prodotto quei
+        // dati): la soglia "giusta" è quella che l'algoritmo di calibrazione calcola da
+        // tangentialRMS, eventualmente corretta al rialzo dall'inseguitore adattivo. Questo
+        // clamp resta solo come rete di sicurezza contro un caso degenere (rumore misurato
+        // ~0 durante una calibrazione anomala → soglia iniziale quasi nulla, prima che
+        // l'inseguitore adattivo abbia avuto modo di imparare nulla), non come pavimento
+        // comportamentale.
         const val ENTER_THRESHOLD_CLAMP_MIN = 1f
         const val ENTER_THRESHOLD_CLAMP_MAX = 400f
     }
@@ -350,7 +358,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
 
                     if (isGroundCalibrating) {
                         val accepted = motionDetector.isDeviceMoving()
-                        pumpingMotionDetected = accepted
                         pumpingDotAccepted = accepted
                         pumpingCurrentSample = currentSample
                         if (accepted) {
@@ -361,8 +368,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
                             pumpingRejectedCount++
                             pumpingBaseline = pumpingDiagnostics?.center ?: IQVector.ZERO
                         }
-                    } else {
-                        pumpingMotionDetected = false
                     }
 
                     val vr = withContext(Dispatchers.Default) {
@@ -467,11 +472,29 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
                             if (data.timestampMs - lastRecordedSampleMs >= recordSampleIntervalMs) {
                                 lastRecordedSampleMs = data.timestampMs
                                 recordingRows.add(
-                                    "%d,%.4f,%.2f,%.4f,%.2f,%b,%s,%d,%.1f,%b,%.4f,%.4f,%.3f,%b,%s,%.4f,%b,%.3f,%b".format(
+                                    // FIX: String.format usa il locale del dispositivo per default. In
+                                    // italiano i decimali si scrivono con la virgola ("179,33"), che
+                                    // rompe il CSV: la virgola è anche il separatore di colonna, quindi
+                                    // ogni riga finiva spaccata in campi sbagliati (19 attesi, 29 letti).
+                                    // Locale.ROOT forza sempre il punto decimale, indipendentemente
+                                    // dalla lingua del telefono.
+                                    // detectionMagnitude aggiunto: è la grandezza REALMENTE confrontata
+                                    // con enterThresholdEff/exitThresholdEff per decidere isDetected
+                                    // (proiezione tangenziale rispetto all'asse, quando calibrato) —
+                                    // diversa da vectorDistance (modulo totale, non filtrato dall'asse).
+                                    // adaptiveNoiseFloor aggiunto: il contributo della soglia adattiva
+                                    // (VectorProcessor.adaptiveNoiseFloor, sulla stessa scala di
+                                    // detectionMagnitude) — permette di verificare sul campo se e quando
+                                    // supera la soglia calcolata dalla calibrazione, invece di doverlo
+                                    // dedurre a posteriori da enterThresholdEff.
+                                    "%d,%.4f,%.2f,%.4f,%.4f,%.4f,%.2f,%b,%s,%d,%.1f,%b,%.4f,%.4f,%.3f,%b,%s,%.4f,%b,%.3f,%b".format(
+                                        Locale.ROOT,
                                         data.timestampMs,
                                         data.delta,
                                         data.phase,
                                         vr.vectorDistance,
+                                        vr.detectionMagnitude,
+                                        vr.adaptiveNoiseFloor,
                                         vr.relativeAngleDeg,
                                         vr.isDetected,
                                         vr.metalType,
@@ -491,8 +514,13 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
                                 )
                             }
 
-                            if (System.currentTimeMillis() - recordingStartMs >= recordingDurationMs) {
+                            val nowRec = System.currentTimeMillis()
+                            if (nowRec - recordingStartMs >= recordingDurationMs) {
                                 finishSessionRecording()
+                            } else if (nowRec - lastRecordingCountdownUpdateMs >= 1000L) {
+                                lastRecordingCountdownUpdateMs = nowRec
+                                val remainingMs = recordingDurationMs - (nowRec - recordingStartMs)
+                                _recordingSecondsRemaining.value = (remainingMs / 1000L).toInt().coerceAtLeast(0)
                             }
                         }
 
@@ -502,7 +530,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
                                 val result = depthCalibrator.addCalibrationSample(
                                     eventFeatures = depthResult.features,
                                     vdi = depthResult.features.peakVdi,
-                                    confidence = vr.confidence,
                                     threshold = vectorProcessor.enterDetectionThreshold,
                                     context = getApplication()
                                 )
@@ -576,7 +603,7 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
 
                         // ===== LOGGING PERIODICO STATUS (ogni 1 secondo) =====
                         val nowLog = System.currentTimeMillis()
-                        if (nowLog - lastStatusLogMs >= STATUS_LOG_INTERVAL_MS) {
+                        if (nowLog - lastStatusLogMs >= statusLogIntervalMs) {
                             lastStatusLogMs = nowLog
                             logPeriodicStatus()
                         }
@@ -596,12 +623,14 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
 
     private fun updateUiState(vr: VectorResult, depthResult: DepthAnalyzer.DepthResult) {
         vectorResult = vr
-        groundAngleDeg = vectorProcessor.groundAxisDeg
         iqCurrent = vr.vector
         iqBaseline = vr.baseline
-        liveDelta = vr.vectorDistance
-        _isMetalDetecting.value = vr.isDetected
-        normalizedDistance = (vr.vectorDistance / vectorProcessor.enterDetectionThreshold.coerceAtLeast(0.001f)).coerceIn(0f, 1f)
+        // Il meter deve riflettere la stessa grandezza che decide isDetected
+        // (vr.detectionMagnitude, tangenziale rispetto all'asse dopo calibrazione),
+        // non vr.vectorDistance (energia totale) — altrimenti un movimento radiale
+        // (pumping/terreno) può spingere il meter a fondo scala senza che il
+        // trigger di rilevazione reale sia vicino a scattare.
+        liveDelta = vr.detectionMagnitude
         phaseDiff = vr.relativeAngleDeg
         phaseNormalized = (vr.relativeAngleDeg / PHASE_DISPLAY_RANGE_DEG).coerceIn(-1f, 1f)
 
@@ -611,7 +640,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
             vdi = vr.vdi,
             type = vr.metalType,
             confidence = vr.confidence,
-            amplitude = vr.vectorDistance * 1000f,
             isLocked = _currentPrediction.value != null,
             depth = displayDepth
         )
@@ -789,32 +817,10 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
         Toast.makeText(getApplication(), "Air Balance resettata", Toast.LENGTH_SHORT).show()
     }
 
-    fun toggleManualGroundBalance() {
-        isManualGroundBalance = !isManualGroundBalance
-        vectorProcessor.isManualGroundBalance = isManualGroundBalance
-
-        if (isManualGroundBalance) {
-            // Cattura il riferimento calibrato ORA (ultimo Air Balance/Pumping), come un
-            // "auto ground balance" appena fatto su un detector professionale: il Manuale
-            // parte da lì con correzione zero, non da un valore precedente residuo.
-            calibratedPhaseOffsetDeg = vectorProcessor.groundPhaseOffsetDeg
-            manualGroundAngleDeg = 0f
-            setManualGroundAngle(manualGroundAngleDeg)
-            logToConsole("🖐️ Ground Balance MANUALE - correzione da G.SET calibrato (%.1f°)".format(calibratedPhaseOffsetDeg))
-        } else {
-            logToConsole("🤖 Ground Balance AUTOMATICO")
-            // Ripristina il riferimento puro, annullando qualunque correzione manuale.
-            vectorProcessor.groundPhaseOffsetDeg = calibratedPhaseOffsetDeg
-            vectorProcessor.clearGroundAxis()
-        }
-    }
-
     fun setManualGroundAngle(deg: Float) {
         isManualGroundBalance = true
-        vectorProcessor.isManualGroundBalance = true
 
         manualGroundAngleDeg = deg.coerceIn(-45f, 45f)
-        groundAngleDeg = calibratedPhaseOffsetDeg + manualGroundAngleDeg
 
         // FIX: scrive nel riferimento che DAVVERO guida l'angolo a schermo e la
         // classificazione (groundPhaseOffsetDeg), come correzione sopra il valore
@@ -843,7 +849,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
 
         if (isManualGroundBalance) {
             isManualGroundBalance = false
-            vectorProcessor.isManualGroundBalance = false
         }
 
         if (_isAutoGroundTracking.value) {
@@ -852,7 +857,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
 
         groundCalibrator.startAccumulation()
         isGroundCalibrating = true
-        vectorProcessor.isCalibratingGround = true
         pumpingDiagnostics = null   // Resetta la diagnostica live
 
         // FIX: seeding da pumping. Il pump è l'unico momento in cui sappiamo con certezza
@@ -863,7 +867,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
         // telefono fermo su un tavolo prima di iniziare).
         motionDetector.beginPumpSeeding()
 
-        pumpingMotionDetected = false
         pumpingCurrentSample = IQVector.ZERO
         pumpingBaseline = IQVector.ZERO
         pumpingDotAccepted = true
@@ -989,7 +992,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
                 manualGroundAngleDeg = 0f
                 setManualGroundAngle(0f)
             }
-            groundAngleDeg = orientedAxisDeg
 
             // INIZIALIZZA IL GROUND TRACKER CON L'ASSE DAL PUMPING (già orientato)
             groundTracker.setGroundAxis(orientedAxisDeg, report.groundCenter)
@@ -1023,7 +1025,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
         }
 
         isGroundCalibrating = false
-        vectorProcessor.isCalibratingGround = false
 
         Toast.makeText(getApplication(), toastMessage, Toast.LENGTH_LONG).show()
     }
@@ -1033,7 +1034,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
             calibrationJob?.cancel()
             calibrationJob = null
             isGroundCalibrating = false
-            vectorProcessor.isCalibratingGround = false
             // FIX: se il pumping viene interrotto qui invece che da finishGroundCalibration(),
             // la finestra di seeding del motion detector va comunque chiusa esplicitamente,
             // altrimenti isSeedingFromPump resta bloccato aperto e i campioni continuano ad
@@ -1043,7 +1043,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
 
         if (isManualGroundBalance) {
             isManualGroundBalance = false
-            vectorProcessor.isManualGroundBalance = false
         }
 
         if (_isAutoGroundTracking.value) {
@@ -1085,7 +1084,6 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
         calibratedPhaseOffsetDeg = vectorProcessor.groundPhaseOffsetDeg
 
         manualGroundAngleDeg = 0f
-        groundAngleDeg = 0f
 
         this.pcaQuality = 1.0f
         this.terrainMineralization = 0f
@@ -1118,7 +1116,7 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
             _displayAutoValue.value = 0f
 
             viewModelScope.launch {
-                delay(150)
+                delay(150.milliseconds)
                 _autoTrackingState.value = AutoTrackingState.IDLE
             }
 
@@ -1136,6 +1134,16 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
             _autoTrackingState.value = AutoTrackingState.ACTIVATING
             _displayAutoValue.value = groundTracker.getGroundAngleDeg()
 
+            // FIX (bug "corruzione sopravvive a pausa/ripresa"): la macchina a stati del
+            // tracker resta esattamente dove l'aveva lasciata la disattivazione precedente
+            // (driftLimitReached, budget di deriva, stato GROUND_LOCK/FREEZE) — senza questo,
+            // riattivare Auto-Tracking dopo una pausa riprendeva da un punto potenzialmente
+            // già compromesso invece di ripartire pulito. reanchorForResume() riporta la
+            // macchina a stati a SEARCH e riancora il budget di deriva al centro attuale,
+            // SENZA toccare asse/pumpingAnchorRadial (il Pumping resta valido) e senza
+            // contare come un recupero da corruzione (vedi commento nel metodo).
+            groundTracker.reanchorForResume()
+
             // Inizializza il tracker con l'asse dal Pumping
             vectorProcessor.setExternalBaseline(groundTracker.getCenter())
             vectorProcessor.setExternalAxis(groundTracker.getGroundAngleDeg())
@@ -1145,7 +1153,7 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
             _displayAutoValue.value = groundTracker.getGroundAngleDeg()
 
             viewModelScope.launch {
-                delay(150)
+                delay(150.milliseconds)
                 _autoTrackingState.value = AutoTrackingState.ACTIVE
             }
 
@@ -1168,7 +1176,7 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
         _displayAutoValue.value = 0f
 
         viewModelScope.launch {
-            delay(150)
+            delay(150.milliseconds)
             _autoTrackingState.value = AutoTrackingState.IDLE
         }
 
@@ -1182,22 +1190,37 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
 
     fun resetAutoTracker() {
         if (_isAutoGroundTracking.value) {
-            val currentAxis = groundTracker.getGroundAngleDeg()
-            val currentCenter = groundTracker.getCenter()
+            // FIX (bug "il Reset Tracker non risolve nulla, anzi corrompe il Pumping"):
+            // la versione precedente leggeva asse/centro CORRENTI (potenzialmente già
+            // corrotti, è proprio per quello che l'utente preme Reset) e li riapplicava
+            // con setGroundAxis(), che tratta i valori ricevuti come una calibrazione
+            // NUOVA — sovrascrivendo pumpingAnchorRadial (l'ancora assoluta del Pumping
+            // vero, quella che NON deve mai essere toccata) con lo stesso valore corrotto
+            // che si voleva correggere. Il risultato: nessun recupero reale, e l'ancora di
+            // sicurezza distrutta per la sessione. requestBaselineRecovery() è lo stesso
+            // percorso già usato dai recuperi automatici (failsafe 12s, divergenza G.ID):
+            // riporta la macchina a stati a SEARCH e, se ci sono stati troppi recuperi
+            // ravvicinati, ripristina l'ultimo centro VALIDATO (lastGoodCenter), invece di
+            // rifidarsi del centro corrente — senza mai toccare pumpingAnchorRadial/asse.
+            val stillTracking = groundTracker.requestBaselineRecovery()
 
-            groundTracker.reset()
-            groundTracker.setGroundAxis(currentAxis, currentCenter)
+            if (stillTracking) {
+                vectorProcessor.setExternalBaseline(groundTracker.getCenter())
+                vectorProcessor.setExternalAxis(groundTracker.getGroundAngleDeg())
 
-            vectorProcessor.setExternalBaseline(groundTracker.getCenter())
-            vectorProcessor.setExternalAxis(groundTracker.getGroundAngleDeg())
+                _trackingStatus.value = "Reset effettuato"
+                _trackingQuality.value = 1f
+                _trackerUpdates.value = 0L
+                _displayAutoValue.value = groundTracker.getGroundAngleDeg()
 
-            _trackingStatus.value = "Reset effettuato"
-            _trackingQuality.value = 1f
-            _trackerUpdates.value = 0L
-            _displayAutoValue.value = groundTracker.getGroundAngleDeg()
-
-            logToConsole("🔄 Tracker resettato (asse mantenuto)")
-            Toast.makeText(getApplication(), "Tracker resettato", Toast.LENGTH_SHORT).show()
+                logToConsole("🔄 Tracker resettato (asse e ancora Pumping invariati)")
+                Toast.makeText(getApplication(), "Tracker resettato", Toast.LENGTH_SHORT).show()
+            } else {
+                // Troppi reset/recuperi ravvicinati: la baseline non è più affidabile,
+                // stesso trattamento del recupero automatico (vedi
+                // forceDisableAutoTrackingForRecalibration).
+                forceDisableAutoTrackingForRecalibration()
+            }
         } else {
             Toast.makeText(getApplication(), "Auto-Tracking non attivo", Toast.LENGTH_SHORT).show()
         }
@@ -1280,7 +1303,7 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
 
         recordingRows.clear()
         recordingRows.add(
-            "timestampMs,rawDelta,rawPhaseDeg,vectorDistance,relativeAngleDeg,isDetected,metalType,vdi," +
+            "timestampMs,rawDelta,rawPhaseDeg,vectorDistance,detectionMagnitude,adaptiveNoiseFloor,relativeAngleDeg,isDetected,metalType,vdi," +
                     "confidence,isAngleValid,enterThresholdEff,exitThresholdEff,kVect,isAutoTracking,trackerState," +
                     "driftFromOrigin,driftLimitReached,trackingQuality,isCoilMoving"
         )
@@ -1288,7 +1311,8 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
         recordingDurationMs = durationSeconds.coerceIn(1, 300) * 1000L
         lastRecordedSampleMs = 0L
         isRecordingSession = true
-        _isRecording.value = true
+        lastRecordingCountdownUpdateMs = 0L
+        _recordingSecondsRemaining.value = durationSeconds.coerceIn(1, 300)
 
         logToConsole("🔴 Registrazione sessione avviata: ${durationSeconds}s a 100Hz")
         Toast.makeText(getApplication(), "Registrazione avviata (${durationSeconds}s)", Toast.LENGTH_SHORT).show()
@@ -1316,11 +1340,12 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
      */
     private fun finishSessionRecording() {
         isRecordingSession = false
-        _isRecording.value = false
+        _recordingSecondsRemaining.value = -1
 
         val rowCount = recordingRows.size - 1 // -1 per l'header
         if (rowCount <= 0) {
             logToConsole("❌ Registrazione: nessun campione raccolto")
+            Toast.makeText(getApplication(), "Registrazione fallita: nessun campione raccolto", Toast.LENGTH_LONG).show()
             recordingRows.clear()
             return
         }
@@ -1335,12 +1360,8 @@ class DetectorViewModelV2(application: Application) : AndroidViewModel(applicati
                 val values = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, fileName)
                     put(MediaStore.Downloads.MIME_TYPE, "text/csv")
-                    // RELATIVE_PATH esiste solo da API 29 in su; il progetto già gestisce
-                    // rami Build.VERSION_CODES condizionali altrove (vedi MainActivity.kt),
-                    // quindi lo stesso pattern è coerente col resto del codice.
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                    }
+                    // RELATIVE_PATH esiste da API 29 in su, che è già il minSdk del progetto.
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 }
                 val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 if (uri != null) {

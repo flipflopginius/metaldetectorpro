@@ -1,0 +1,299 @@
+<title>PreRex — proposte schermata principale</title>
+<style>
+:root{
+  --page-bg:#F3F1EC;
+  --page-text:#28251F;
+  --page-text-soft:#6B6558;
+  --page-line:#DDD8CC;
+  --card-bg:#FFFFFF;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --page-bg:#17150F;
+    --page-text:#EDEAE0;
+    --page-text-soft:#9C9585;
+    --page-line:#332F26;
+    --card-bg:#211E17;
+  }
+}
+:root[data-theme="dark"]{
+  --page-bg:#17150F;
+  --page-text:#EDEAE0;
+  --page-text-soft:#9C9585;
+  --page-line:#332F26;
+  --card-bg:#211E17;
+}
+:root[data-theme="light"]{
+  --page-bg:#F3F1EC;
+  --page-text:#28251F;
+  --page-text-soft:#6B6558;
+  --page-line:#DDD8CC;
+  --card-bg:#FFFFFF;
+}
+*{box-sizing:border-box;}
+body{margin:0;}
+.page{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  color:var(--page-text);
+  padding:2.5rem 1.5rem 4rem;
+  max-width:1180px;
+  margin:0 auto;
+}
+.page h1{
+  font-size:22px;
+  font-weight:500;
+  margin:0 0 .35rem;
+  text-wrap:balance;
+}
+.page .sub{
+  color:var(--page-text-soft);
+  font-size:14px;
+  margin:0 0 2.5rem;
+  max-width:60ch;
+  line-height:1.6;
+}
+.grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:28px;
+}
+@media (max-width:900px){
+  .grid{grid-template-columns:1fr; max-width:380px; margin:0 auto;}
+}
+.column{display:flex; flex-direction:column; gap:14px;}
+.label{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:8px;
+}
+.label .name{font-size:15px; font-weight:500;}
+.label .tag{
+  font-size:11px;
+  color:var(--page-text-soft);
+  letter-spacing:.03em;
+}
+.rationale{
+  font-size:13px;
+  color:var(--page-text-soft);
+  line-height:1.55;
+  margin:0;
+}
+.frame{
+  background:var(--card-bg);
+  border:0.5px solid var(--page-line);
+  border-radius:34px;
+  padding:10px;
+}
+.screen{
+  border-radius:26px;
+  overflow:hidden;
+  aspect-ratio:9/19.5;
+  display:flex;
+  flex-direction:column;
+  font-family:var(--scr-font,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif);
+}
+
+/* ============ A. ANALOG HERITAGE (Garrett / Fisher) ============ */
+.a-screen{
+  --scr-font:'Sans','Segoe UI',sans-serif;
+  background:#1B1714;
+  color:#F2E9DA;
+  padding:16px 16px 0;
+}
+.a-status{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#B4A48C;padding-bottom:10px;}
+.a-battery{display:flex;align-items:center;gap:5px;}
+.a-battery .bar{width:18px;height:9px;border:1px solid #B4A48C;border-radius:2px;position:relative;}
+.a-battery .bar::after{content:"";position:absolute;left:1px;top:1px;bottom:1px;width:70%;background:#D9A441;border-radius:1px;}
+.a-hero{
+  background:#241E19;
+  border:1px solid #3A3128;
+  border-radius:16px;
+  padding:16px 18px 18px;
+  text-align:center;
+  margin-bottom:12px;
+}
+.a-vdi{font-family:'Courier New',monospace; font-size:52px; font-weight:700; line-height:1; color:#D9A441; font-variant-numeric:tabular-nums;}
+.a-type{font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:#E7C77E; margin-top:4px;}
+.a-meter{margin:0 auto 6px; width:172px;}
+.a-substats{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px;}
+.a-stat{background:#241E19; border:1px solid #3A3128; border-radius:12px; padding:8px 10px;}
+.a-stat .k{font-size:10px; color:#9C8F79; text-transform:uppercase; letter-spacing:.06em;}
+.a-stat .v{font-family:'Courier New',monospace; font-size:19px; font-weight:700; color:#F2E9DA; font-variant-numeric:tabular-nums;}
+.a-ground{display:flex; justify-content:space-between; background:#241E19; border:1px solid #3A3128; border-radius:12px; padding:9px 12px; margin-bottom:10px; font-size:12px;}
+.a-ground b{color:#D9A441;}
+.a-chip{display:inline-flex; align-items:center; gap:6px; background:#2B3A28; color:#9FCB8E; border-radius:20px; padding:5px 12px; font-size:11px; margin-bottom:10px; width:fit-content;}
+.a-chip .dot{width:6px;height:6px;border-radius:50%;background:#9FCB8E;}
+.a-target{background:#2E2620; border:1px solid #D9A441; border-radius:12px; padding:10px 12px; margin-bottom:12px;}
+.a-target .n{font-size:13px; font-weight:600; color:#F2E9DA;}
+.a-target .s{font-size:11px; color:#C7A968;}
+.a-nav{margin-top:auto; display:flex; justify-content:space-around; padding:10px 4px 14px; border-top:1px solid #332B22; background:#1B1714;}
+.a-nav .item{display:flex; flex-direction:column; align-items:center; gap:3px; font-size:9px; color:#8A7D68;}
+.a-nav .item.active{color:#D9A441;}
+.a-nav .ico{width:20px;height:20px;border-radius:5px;background:#332B22;}
+.a-nav .item.active .ico{background:#D9A441;}
+
+/* ============ B. DIGITAL PRECISION (Minelab / XP) ============ */
+.b-screen{
+  --scr-font:'Segoe UI',sans-serif;
+  background:#090D11;
+  color:#E4F1EE;
+  padding:16px 14px 0;
+}
+.b-status{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#5D7472;padding-bottom:12px;}
+.b-hero{display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:14px;}
+.b-vdi-wrap{}
+.b-vdi{font-family:'Consolas','Courier New',monospace; font-size:58px; font-weight:700; line-height:.9; color:#37D9BE; font-variant-numeric:tabular-nums;}
+.b-type{font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:#6FA8A0; margin-top:6px;}
+.b-ring{width:74px;height:74px;border-radius:50%;border:5px solid #16232324;position:relative;display:flex;align-items:center;justify-content:center;}
+.b-ring svg{position:absolute;inset:0;}
+.b-ring .pct{font-size:15px;font-weight:600;color:#37D9BE;font-variant-numeric:tabular-nums;}
+.b-row{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;}
+.b-card{background:#101820; border-radius:10px; padding:9px 11px;}
+.b-card .k{font-size:9px; color:#5D7472; text-transform:uppercase; letter-spacing:.07em;}
+.b-card .v{font-family:'Consolas','Courier New',monospace; font-size:17px; font-weight:600; color:#E4F1EE; font-variant-numeric:tabular-nums;}
+.b-ground{display:flex; justify-content:space-between; background:#101820; border-radius:10px; padding:9px 11px; margin-bottom:8px; font-size:11px; color:#8FA5A2;}
+.b-ground b{color:#37D9BE; font-variant-numeric:tabular-nums;}
+.b-chip{display:inline-flex; align-items:center; gap:6px; background:#0F2420; color:#37D9BE; border-radius:6px; padding:5px 10px; font-size:10px; margin-bottom:8px; width:fit-content;}
+.b-target{background:#0F1E24; border-left:2px solid #37D9BE; border-radius:0 8px 8px 0; padding:8px 11px; margin-bottom:10px;}
+.b-target .n{font-size:12px; font-weight:600;}
+.b-target .s{font-size:10px; color:#5D9A90;}
+.b-nav{margin-top:auto; display:flex; justify-content:space-around; padding:9px 4px 14px; border-top:1px solid #131C22; background:#090D11;}
+.b-nav .item{display:flex; flex-direction:column; align-items:center; gap:3px; font-size:9px; color:#3F5250;}
+.b-nav .item.active{color:#37D9BE;}
+.b-nav .ico{width:18px;height:18px;border-radius:4px;background:#141F24;}
+.b-nav .item.active .ico{background:#0F2420; border:1px solid #37D9BE;}
+
+/* ============ C. TACTICAL RUGGED (Nokta / Makro) ============ */
+.c-screen{
+  --scr-font:'Segoe UI',sans-serif;
+  background:#10130B;
+  color:#EEF2DD;
+  padding:14px 14px 0;
+}
+.c-status{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#79835C;padding-bottom:10px; font-weight:600;}
+.c-hero{background:#181D10; border-radius:14px; padding:14px 16px; text-align:center; margin-bottom:10px;}
+.c-vdi{font-family:'Arial Black','Segoe UI',sans-serif; font-size:56px; font-weight:800; line-height:1; color:#D4E23C; font-variant-numeric:tabular-nums;}
+.c-type{font-size:14px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:#EEF2DD; margin-top:2px;}
+.c-bar-wrap{background:#232A15; border-radius:8px; height:16px; margin:10px 2px 0; overflow:hidden;}
+.c-bar{height:100%; background:#D4E23C; border-radius:8px;}
+.c-substats{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;}
+.c-stat{background:#181D10; border-radius:12px; padding:12px 10px; text-align:center;}
+.c-stat .k{font-size:10px; color:#7E8A5C; text-transform:uppercase; font-weight:700; letter-spacing:.05em;}
+.c-stat .v{font-family:'Arial Black',sans-serif; font-size:22px; font-weight:800; color:#EEF2DD; font-variant-numeric:tabular-nums;}
+.c-ground{display:flex; justify-content:space-between; background:#181D10; border-radius:12px; padding:11px 14px; margin-bottom:10px; font-size:13px; font-weight:600;}
+.c-ground b{color:#D4E23C;}
+.c-chip{display:inline-flex; align-items:center; gap:7px; background:#23330F; color:#D4E23C; border-radius:20px; padding:7px 14px; font-size:12px; font-weight:700; margin-bottom:10px; width:fit-content;}
+.c-target{background:#23330F; border-radius:12px; padding:11px 14px; margin-bottom:12px;}
+.c-target .n{font-size:14px; font-weight:700;}
+.c-target .s{font-size:11px; color:#A9BB7E; font-weight:600;}
+.c-nav{margin-top:auto; display:flex; justify-content:space-around; padding:12px 4px 16px; border-top:2px solid #202714; background:#10130B;}
+.c-nav .item{display:flex; flex-direction:column; align-items:center; gap:4px; font-size:10px; font-weight:700; color:#5C6642;}
+.c-nav .item.active{color:#D4E23C;}
+.c-nav .ico{width:24px;height:24px;border-radius:6px;background:#202714;}
+.c-nav .item.active .ico{background:#D4E23C;}
+</style>
+
+<div class="page">
+  <h1>Tre direzioni per la schermata principale</h1>
+  <p class="sub">Stessi dati reali dell'app (VDI, tipo metallo, confidenza, profondità, G.ID/G.SET, batteria, auto-tracking, target riconosciuto), tre linguaggi visivi diversi ispirati a famiglie di detector commerciali. Nessun codice è stato toccato — sono solo anteprime da valutare.</p>
+
+  <div class="grid">
+
+    <div class="column">
+      <div class="label"><span class="name">A · Analogico</span><span class="tag">stile Garrett / Fisher</span></div>
+      <p class="rationale">Ambra su antracite caldo, cifre in monospace come un display LCD/LED classico, angoli morbidi. Richiama i detector a discriminazione da campo di fascia media.</p>
+      <div class="frame">
+        <div class="screen a-screen">
+          <div class="a-status">
+            <span>PreRex · USB</span>
+            <div class="a-battery"><div class="bar"></div><span>76%</span></div>
+          </div>
+          <div class="a-hero">
+            <div class="a-vdi">62</div>
+            <div class="a-type">Non ferroso</div>
+            <svg class="a-meter" viewBox="0 0 172 40" height="40">
+              <path d="M6 36 A80 80 0 0 1 166 36" fill="none" stroke="#3A3128" stroke-width="8" stroke-linecap="round"/>
+              <path d="M6 36 A80 80 0 0 1 122 6" fill="none" stroke="#D9A441" stroke-width="8" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="a-substats">
+            <div class="a-stat"><div class="k">Confidenza</div><div class="v">87%</div></div>
+            <div class="a-stat"><div class="k">Profondità</div><div class="v">12cm</div></div>
+          </div>
+          <div class="a-ground"><span>G.ID <b>4.2°</b></span><span>G.SET <b>4.0°</b></span></div>
+          <div class="a-chip"><span class="dot"></span>Auto-Tracking · Buono</div>
+          <div class="a-target"><div class="n">Moneta EU 1€</div><div class="s">91% corrispondenza</div></div>
+          <div class="a-nav">
+            <div class="item active"><div class="ico"></div>Main</div>
+            <div class="item"><div class="ico"></div>Comandi</div>
+            <div class="item"><div class="ico"></div>Calibra</div>
+            <div class="item"><div class="ico"></div>Console</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="column">
+      <div class="label"><span class="name">B · Digitale</span><span class="tag">stile Minelab / XP</span></div>
+      <p class="rationale">Blu-nero profondo e ciano, card piatte, gerarchia netta a un solo fuoco visivo. Richiama i detector di fascia alta orientati ai dati.</p>
+      <div class="frame">
+        <div class="screen b-screen">
+          <div class="b-status"><span>PreRex</span><span>USB · 76%</span></div>
+          <div class="b-hero">
+            <div class="b-vdi-wrap">
+              <div class="b-vdi">62</div>
+              <div class="b-type">Non ferroso</div>
+            </div>
+            <div class="b-ring">
+              <svg viewBox="0 0 74 74"><circle cx="37" cy="37" r="31" fill="none" stroke="#162323" stroke-width="6"/><circle cx="37" cy="37" r="31" fill="none" stroke="#37D9BE" stroke-width="6" stroke-dasharray="146 195" stroke-linecap="round" transform="rotate(-90 37 37)"/></svg>
+              <span class="pct">87%</span>
+            </div>
+          </div>
+          <div class="b-row">
+            <div class="b-card"><div class="k">Profondità</div><div class="v">12cm</div></div>
+            <div class="b-card"><div class="k">Batteria</div><div class="v">14.2V</div></div>
+          </div>
+          <div class="b-ground"><span>G.ID <b>4.2°</b></span><span>G.SET <b>4.0°</b></span></div>
+          <div class="b-chip">Auto-Tracking attivo</div>
+          <div class="b-target"><div class="n">Moneta EU 1€</div><div class="s">91% corrispondenza</div></div>
+          <div class="b-nav">
+            <div class="item active"><div class="ico"></div>Main</div>
+            <div class="item"><div class="ico"></div>Comandi</div>
+            <div class="item"><div class="ico"></div>Calibra</div>
+            <div class="item"><div class="ico"></div>Console</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="column">
+      <div class="label"><span class="name">C · Tattico</span><span class="tag">stile Nokta / Makro</span></div>
+      <p class="rationale">Verde oliva scuro e lime ad alta visibilità in pieno sole, bersagli tattili grandi (uso con guanti). Richiama i detector rugged da spiaggia/oro.</p>
+      <div class="frame">
+        <div class="screen c-screen">
+          <div class="c-status"><span>PREREX</span><span>USB · 76%</span></div>
+          <div class="c-hero">
+            <div class="c-vdi">62</div>
+            <div class="c-type">Non ferroso</div>
+            <div class="c-bar-wrap"><div class="c-bar" style="width:72%;"></div></div>
+          </div>
+          <div class="c-substats">
+            <div class="c-stat"><div class="k">Confid.</div><div class="v">87%</div></div>
+            <div class="c-stat"><div class="k">Profond.</div><div class="v">12cm</div></div>
+          </div>
+          <div class="c-ground"><span>G.ID <b>4.2°</b></span><span>G.SET <b>4.0°</b></span></div>
+          <div class="c-chip">● Tracking buono</div>
+          <div class="c-target"><div class="n">Moneta EU 1€</div><div class="s">91% corrispondenza</div></div>
+          <div class="c-nav">
+            <div class="item active"><div class="ico"></div>Main</div>
+            <div class="item"><div class="ico"></div>Comandi</div>
+            <div class="item"><div class="ico"></div>Calibra</div>
+            <div class="item"><div class="ico"></div>Console</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>

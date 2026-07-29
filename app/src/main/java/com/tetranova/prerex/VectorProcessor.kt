@@ -3,7 +3,6 @@ import kotlin.math.*
 
 data class IQVector(val i: Float, val q: Float) {
     val magnitude: Float get() = sqrt(i * i + q * q)
-    operator fun plus(o: IQVector) = IQVector(i + o.i, q + o.q)
     operator fun minus(o: IQVector) = IQVector(i - o.i, q - o.q)
     fun distanceTo(o: IQVector): Float = sqrt((i - o.i) * (i - o.i) + (q - o.q) * (q - o.q))
     companion object { val ZERO = IQVector(0f, 0f) }
@@ -12,10 +11,20 @@ data class IQVector(val i: Float, val q: Float) {
 data class VectorResult(
     val vector: IQVector,
     val baseline: IQVector,
-    val delta: IQVector,
     val vectorDistance: Float,
+    // Metrica usata per il confronto con la soglia di rilevazione (tangenziale
+    // rispetto all'asse di terreno quando calibrato, altrimenti pari a
+    // vectorDistance) — vedi VectorProcessor.processSample(). È il valore che
+    // decide isDetected, quindi qualunque meter che vuole rappresentare "quanto
+    // manca al trigger" deve leggere questo, non vectorDistance: dopo la
+    // calibrazione i due possono divergere (es. movimento radiale/pumping che
+    // gonfia vectorDistance senza avvicinare affatto la soglia reale).
+    val detectionMagnitude: Float,
+    // Stima adattiva del rumore osservato dal vivo (scala di detectionMagnitude, PRIMA del
+    // moltiplicatore di sicurezza) — vedi VectorProcessor.adaptiveNoiseFloor. Esposta per
+    // poterla verificare nei log/CSV diagnostici invece di doverla dedurre a posteriori.
+    val adaptiveNoiseFloor: Float,
     val relativeAngleDeg: Float,
-    val isFerroso: Boolean,
     val isDetected: Boolean,
     val confidence: Float,
     val vdi: Int,
@@ -30,8 +39,6 @@ class VectorProcessor {
     // successivo veniva ricalcolato sulla STESSA baseline pinnata da maxDriftFromOrigin,
     // riattivando la detection all'istante — il timeout non aveva alcun effetto reale.
     var onAutoTrackingStuckReset: (() -> Unit)? = null
-    var isManualGroundBalance = false
-    var isCalibratingGround = false
     var nonFerroLowDeg = 4.0f
     var ferroMinDeg = 5.0f
     // FIX: @Volatile. kVect viene scritto dal thread Main (slider sensibilità, in
@@ -59,6 +66,39 @@ class VectorProcessor {
     var enterDetectionThreshold = 0.15f
     var exitDetectionThreshold = 0.09f
     var noiseMagnitude = 0.01f
+
+    // ===== Soglia adattiva sul rumore osservato dal vivo =====
+    // FIX (ridisegno su richiesta esplicita: lo slider di sensibilità non viene mai usato in
+    // campo, la soglia giusta è quella prodotta dall'algoritmo, non un numero scelto a mano
+    // che copra i casi che l'algoritmo sbaglia). enterDetectionThreshold/exitDetectionThreshold
+    // restano il valore di PARTENZA calcolato dalla calibrazione (Air Balance/Pumping, da
+    // tangentialRMS) — quel calcolo non viene toccato. Ma tangentialRMS è misurato durante il
+    // movimento SU/GIÙ del Pumping, che non è detto rappresenti fedelmente il rumore
+    // incontrato dalla bobina durante una spazzolata laterale reale. Invece di coprire
+    // un'eventuale sottostima con un numero fisso scelto a tavolino (il vecchio
+    // ENTER_THRESHOLD_CLAMP_MIN usato come pavimento comportamentale), il sistema ora osserva
+    // detectionMagnitude campione per campione durante l'uso normale — media (adaptiveNoiseMean)
+    // E variabilità (adaptiveNoiseSigma) del rumore reale — e alza la soglia SOLO se quanto
+    // osservato dal vivo supera quanto previsto dalla calibrazione, mai sotto quel valore
+    // (vedi adaptiveNoiseFloor/effectiveEnterThreshold in processSample).
+    // Il margine sopra la media non è un moltiplicatore inventato: riusa idConfidenceK, la
+    // STESSA costante (2.5 sigma) già usata poco sotto per decidere quando l'angolo di
+    // classificazione è affidabile — stesso criterio statistico, un solo numero, non due.
+    // Tecnica da "squelch adattivo" nei ricevitori radio: un inseguitore ASIMMETRICO. La
+    // MEDIA sale lentamente (alphaUp, non farsi ingannare da un bersaglio vero in
+    // avvicinamento, visibile solo per 1-2s durante una spazzolata) e scende rapidamente
+    // (alphaDown, riaggancia subito un rumore di fondo tornato basso). La SIGMA fa l'opposto
+    // apposta (sale con alphaDown/veloce, scende con alphaUp/lento): un margine di sicurezza
+    // deve allargarsi subito se il rumore diventa più instabile, e restringersi solo quando
+    // quell'instabilità si conferma durevole, non al primo campione tranquillo.
+    // Si azzerano ad ogni nuova calibrazione (vedi setBaselineIQ) perché baseline/asse
+    // cambiano e il livello di "quiete" precedente non è più garantito valido.
+    var adaptiveNoiseFloor = 0f
+        private set
+    private var adaptiveNoiseMean = 0f
+    private var adaptiveNoiseSigma = 0f
+    private val adaptiveFloorAlphaUp = 0.0015f   // costante di tempo ~8-9s a ~13ms/campione
+    private val adaptiveFloorAlphaDown = 0.02f   // costante di tempo ~650ms
     var autoRetuneTimeMs = 5000L
     // FIX: failsafe di sicurezza SEPARATO per quando l'auto-tracking ha il controllo della
     // baseline (useExternalBaseline == true). Il failsafe "normale" (autoRetuneTimeMs, 5s)
@@ -101,7 +141,18 @@ class VectorProcessor {
 
     private var smoothedI = 0f
     private var smoothedQ = 0f
-    private val glenEmaAlpha = 0.15f
+    // FIX (bug "spazzolata dopo Pumping fa impazzire la detection"): 0,15 dava una
+    // costante di tempo di ~87ms (1/alpha campioni, campionamento ~13ms). L'oscillazione
+    // di fase naturale del movimento a mano libera durante una spazzolata reale (misurata
+    // da log di campo: 15-20° ogni 500-900ms) è 6-10 volte più lenta della costante di
+    // tempo del filtro: un EMA così veloce non la attenua quasi per niente, la lascia
+    // passare quasi intatta. Amplificata dalla sottrazione baseline-segnale grezzo (vettori
+    // grandi, quasi uguali — vedi corda 2R·sin(θ/2)), produce salti fino a ~90 unità nel
+    // segnale compensato, ben oltre la soglia di detection. 0,05 (costante di tempo
+    // ~260ms) attenua l'oscillazione di oltre il 60% restando comunque molto più reattivo
+    // delle temporizzazioni con cui il resto della pipeline già ragiona su un evento di
+    // rilevamento reale (freezeAfterDetectionMs=1200ms, groundLockDurationMs=3000ms).
+    private val glenEmaAlpha = 0.05f
     private var phaseFilterSin = 0f
     private var phaseFilterCos = 1f
     private val phaseDiffAlpha = 0.25f
@@ -198,7 +249,12 @@ class VectorProcessor {
     // riconverge produce un picco transitorio di Energia, letto erroneamente come un
     // bersaglio. Sopprimiamo la detection per una breve finestra nota.
     private var calibrationSettleUntilMs = 0L
-    var calibrationSettleTimeMs = 2000L   // finestra di assestamento post-pumping
+    // FIX: 2000ms erano ampiamente sufficienti (~23 costanti di tempo del vecchio
+    // glenEmaAlpha=0,15, ~87ms) ma restano generosi anche con l'attuale 0,05 (~260ms di
+    // costante di tempo: 800ms = ~3 costanti di tempo, filtro assestato oltre il 95%).
+    // 2s di sordità completa dopo OGNI Pumping, specie se ripetuto più volte in una
+    // sessione di test ravvicinata, si somma e dà la sensazione di scarsa reattività.
+    var calibrationSettleTimeMs = 800L   // finestra di assestamento post-pumping
 
     // =============================================================
     // API PER AUTOTRACKING
@@ -307,15 +363,45 @@ class VectorProcessor {
             magnitude
         }
 
-        // Applica la sensibilità
-        val effectiveEnterThreshold = enterDetectionThreshold / kVect
-        val effectiveExitThreshold = exitDetectionThreshold / kVect
-
         val wasDetected = internalIsDetected
         val now = System.currentTimeMillis()
 
         // ★ FIX: finestra di assestamento post-calibrazione
         val inSettleWindow = now < calibrationSettleUntilMs
+
+        // Aggiorna la soglia adattiva PRIMA di calcolarla per questo campione, usando
+        // l'esito del campione PRECEDENTE (wasDetected) per decidere se ci troviamo in un
+        // periodo presumibilmente "silenzioso": evita qualunque circolarità (il campione non
+        // può influenzare la soglia con cui viene giudicato lui stesso), e in settle window
+        // il transitorio del filtro non è rumore rappresentativo, quindi va escluso.
+        if (!wasDetected && !inSettleWindow) {
+            val deviation = detectionMagnitude - adaptiveNoiseMean
+            adaptiveNoiseMean += if (deviation > 0f) {
+                adaptiveFloorAlphaUp * deviation
+            } else {
+                adaptiveFloorAlphaDown * deviation
+            }
+            val absDeviation = abs(deviation)
+            adaptiveNoiseSigma += if (absDeviation > adaptiveNoiseSigma) {
+                adaptiveFloorAlphaDown * (absDeviation - adaptiveNoiseSigma)
+            } else {
+                adaptiveFloorAlphaUp * (absDeviation - adaptiveNoiseSigma)
+            }
+            adaptiveNoiseFloor = adaptiveNoiseMean + idConfidenceK * adaptiveNoiseSigma
+        }
+
+        // Applica la sensibilità. La soglia effettiva è la PIÙ ALTA tra quella calcolata
+        // dall'algoritmo di calibrazione e quella richiesta dal rumore osservato dal vivo
+        // (mai il contrario: l'algoritmo di calibrazione resta comunque un limite inferiore).
+        val calibratedEnterThreshold = enterDetectionThreshold / kVect
+        val calibratedExitThreshold = exitDetectionThreshold / kVect
+        val effectiveEnterThreshold = max(calibratedEnterThreshold, adaptiveNoiseFloor)
+        val exitToEnterRatio = if (calibratedEnterThreshold > 0.0001f) {
+            calibratedExitThreshold / calibratedEnterThreshold
+        } else {
+            0.6f
+        }
+        val effectiveExitThreshold = effectiveEnterThreshold * exitToEnterRatio
 
         internalIsDetected = if (inSettleWindow) {
             // Durante la finestra di assestamento, sopprimiamo la detection per evitare
@@ -334,19 +420,29 @@ class VectorProcessor {
             // Lock. Da qui riparte la ricerca del picco per il nuovo target.
             resetTargetIdLock()
         } else if (internalIsDetected && !useExternalBaseline && (now - detectionStartTimeMs > autoRetuneTimeMs)) {
-            // FIX: quando l'auto-tracking è attivo (useExternalBaseline == true) il ViewModel
-            // richiama setExternalBaseline/setExternalAxis ad ogni campione (vedi
-            // DetectorViewModelV2, blocco "GROUND TRACKER"), quindi il reset forzato qui sotto
-            // veniva sovrascritto dal GroundTracker nello stesso ciclio/campione successivo:
-            // il failsafe di sicurezza a 5s era di fatto inefficace durante l'auto-tracking,
-            // pur continuando a resettare inutilmente smoothedI/Q e il filtro di fase.
-            // Ora il failsafe interno si applica solo quando NON è il GroundTracker ad avere
-            // il controllo della baseline.
+            // FIX (bug "rilevazione bloccata per sempre, anche senza auto-tracking"):
+            // questo ramo prima chiamava setBaselineIQ(filteredInput), cioè usava il segnale
+            // ATTUALE come nuovo zero. Se la detection resta bloccata per più di
+            // autoRetuneTimeMs perché la bobina è ferma sopra (o vicino) un metallo vero —
+            // non per una deriva di baseline genuina — questo insegna al sistema che il
+            // metallo È il terreno: al campione successivo il vero terreno torna a leggersi
+            // come un delta enorme rispetto alla nuova baseline sbagliata, la detection
+            // riscatta, e allo scadere del timeout successivo ci si ri-azzera di nuovo sullo
+            // STESSO segnale contaminato — un loop infinito indistinguibile dall'esterno da
+            // "il sistema è bloccato in rilevazione". Non c'è modo di distinguere qui, solo
+            // dal tempo trascorso, "baseline davvero da rifare" da "c'è ancora un target
+            // vero sotto la bobina": bisogna trattarli allo stesso modo prudente già usato
+            // sotto per il percorso con auto-tracking, che infatti non soffre di questo bug —
+            // sblocca solo il flag (il prossimo campione rivaluta da zero con
+            // effectiveEnterThreshold, non resta ostaggio della soglia di uscita più bassa),
+            // senza toccare la baseline. Se il segnale è realmente sceso, la nuova valutazione
+            // lo confermerà; se è ancora un target vero, la detection si riaggancia
+            // correttamente invece di corrompere lo zero.
             internalIsDetected = false
-            setBaselineIQ(filteredInput)
+            resetTargetIdLock()
             phaseFilterSin = 0f
             phaseFilterCos = 1f
-            onLogMessage?.invoke("Timeout 5s: Autotune forzato. Nuova baseline acquisita.")
+            onLogMessage?.invoke("⚠️ Rilevamento bloccato >${autoRetuneTimeMs / 1000}s: reset forzato del flag di detection (baseline non toccata).")
         } else if (internalIsDetected && useExternalBaseline && (now - detectionStartTimeMs > autoTrackingStuckDetectionTimeoutMs)) {
             // FIX: vedi commento su autoTrackingStuckDetectionTimeoutMs sopra. NON tocchiamo
             // la baseline qui (è il GroundTracker ad averne il controllo): ci limitiamo a
@@ -459,8 +555,7 @@ class VectorProcessor {
         // Calcolo della confidenza (0-100%): resta LIVE (basata sull'ampiezza corrente, non
         // sull'angolo) — è corretto che scenda mentre il target si allontana in uscita.
         val confidenceValue = if (internalIsDetected) {
-            val effectiveThreshold = enterDetectionThreshold / kVect
-            val ratio = (magnitude / effectiveThreshold).coerceIn(1f, 5f)
+            val ratio = (magnitude / effectiveEnterThreshold).coerceIn(1f, 5f)
             (((ratio - 1f) / 4f) * 100f).coerceIn(0f, 100f)
         } else {
             0f
@@ -469,10 +564,10 @@ class VectorProcessor {
         return VectorResult(
             vector = filteredInput,
             baseline = effectiveBaseline,
-            delta = compensated,
             vectorDistance = magnitude,
+            detectionMagnitude = detectionMagnitude,
+            adaptiveNoiseFloor = adaptiveNoiseFloor,
             relativeAngleDeg = outputDisplayAngleDeg,
-            isFerroso = (outputMetalType == "FERRO"),
             isDetected = internalIsDetected,
             confidence = confidenceValue,
             vdi = outputVdi,
@@ -522,6 +617,15 @@ class VectorProcessor {
             useExternalBaseline = false
             externalBaselineOverride = null
         }
+        // Nuova calibrazione (Air Balance o Pumping, quest'ultimo passa da qui via
+        // applyGroundCalibration): baseline/asse cambiano, il livello di "quiete" imparato
+        // dalla calibrazione precedente non è più garantito rappresentativo. Si riparte da
+        // zero: fino a che l'inseguitore non ha nuovamente imparato nulla, effectiveEnterThreshold
+        // coincide esattamente con la soglia calcolata dall'algoritmo, come prima di questa
+        // modifica.
+        adaptiveNoiseMean = 0f
+        adaptiveNoiseSigma = 0f
+        adaptiveNoiseFloor = 0f
     }
 
     fun setNoiseEstimate(noise: Float) {

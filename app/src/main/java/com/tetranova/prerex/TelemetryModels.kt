@@ -15,8 +15,6 @@ data class DeviceParams(
     val battery: Float = 0f,
     val frequency: Float = 0f,
     val transportMode: String = "UNKNOWN",
-    val baseline: Float = 0f,
-    val groundPhase: Float = 0f,
     val batteryReady: Boolean = false
 )
 
@@ -24,7 +22,6 @@ data class AnalysisResult(
     val vdi: Int = 0,
     val type: String = "IDLE",
     val confidence: Float = 0f,
-    val amplitude: Float = 0f,
     val isLocked: Boolean = false,
     val depth: Float = 0f
 )

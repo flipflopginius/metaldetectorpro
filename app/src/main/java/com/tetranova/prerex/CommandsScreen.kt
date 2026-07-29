@@ -20,7 +20,6 @@ import kotlinx.coroutines.launch
 enum class CommandType { ACTION, INT_RANGE, FLOAT_RANGE }
 
 data class CommandDef(
-    val id: String,
     val name: String,
     val description: String,
     val command: String,
@@ -47,7 +46,7 @@ fun CommandsScreen(vm: DetectorViewModelV2) {
     // 🔥 Stato per la calibrazione
     var showCalibrationPanel by remember { mutableStateOf(false) }
     var selectedMetalType by remember { mutableStateOf(DepthCalibrator.MetalType.FERRO) }
-    var selectedDepth by remember { mutableStateOf(15f) }
+    var selectedDepth by remember { mutableFloatStateOf(15f) }
     var targetName by remember { mutableStateOf("") }
 
     val depthCalibrator = vm.depthCalibrator
@@ -57,15 +56,15 @@ fun CommandsScreen(vm: DetectorViewModelV2) {
 
     val commands = remember {
         listOf(
-            CommandDef(id = "freq", name = "Frequenza TX", description = "Frequenza di lavoro della bobina (1000-50000 Hz)",
+            CommandDef(name = "Frequenza TX", description = "Frequenza di lavoro della bobina (1000-50000 Hz)",
                 command = "SETFREQ", type = CommandType.INT_RANGE, range = 1000..50000, unit = "Hz",
                 isLocal = false, currentValueProvider = { vm.params.frequency.toInt() },
                 onValueChanged = { newVal -> vm.updateFrequency((newVal as Int).toFloat()) }),
-            CommandDef(id = "duty", name = "Duty Cycle", description = "Percentuale duty cycle TX (10-90%)",
+            CommandDef(name = "Duty Cycle", description = "Percentuale duty cycle TX (10-90%)",
                 command = "SETDUTY", type = CommandType.INT_RANGE, range = 10..90, unit = "%",
                 isLocal = false, currentValueProvider = { vm.dutyCycle },
                 onValueChanged = { newVal -> vm.updateDutyCycle(newVal as Int) }),
-            CommandDef(id = "reboot", name = "Riavvia ESP32", description = "Riavvia il microcontrollore",
+            CommandDef(name = "Riavvia ESP32", description = "Riavvia il microcontrollore",
                 command = "REBOOT", type = CommandType.ACTION, isLocal = false)
         )
     }
@@ -149,6 +148,49 @@ fun CommandsScreen(vm: DetectorViewModelV2) {
                         }
                         Spacer(Modifier.weight(1f))
                         Text(if (isConnected) "✅" else "❌", style = MaterialTheme.typography.headlineSmall)
+                    }
+                }
+            }
+        }
+
+        // =============================================================
+        // REGISTRAZIONE DIAGNOSTICA (per segnalazione bug: CSV in Download)
+        // =============================================================
+        item {
+            val secondsRemaining by vm.recordingSecondsRemaining.collectAsState()
+            val isRecording = secondsRemaining >= 0
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A2E))
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        "📼 Registrazione diagnostica",
+                        color = Color(0xFFFFD740),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Registra 2 minuti di attività (delta/fase grezzi, stato detection, stato tracker) e salva un CSV in Download — utile per segnalare un problema senza dover guardare lo schermo mentre spazzoli.",
+                        color = Color(0xFF888888),
+                        fontSize = 10.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = { vm.startSessionRecording(120) },
+                        enabled = isConnected && !isRecording,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isRecording) Color(0xFF3A1A1A) else Color(0xFF1E3A2F),
+                            contentColor = if (isRecording) Color(0xFFFF6B6B) else Color(0xFF64FFDA)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            if (isRecording) "⏺ Registrazione in corso — ${secondsRemaining}s rimanenti"
+                            else "🔴 Registra 2 minuti",
+                            fontSize = 12.sp
+                        )
                     }
                 }
             }

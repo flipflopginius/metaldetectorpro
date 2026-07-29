@@ -164,9 +164,6 @@ class GroundTracker {
     var recoveryEscalationCount = 2
     var recoveryDisableCount = 4
 
-    private var needsRecalibration = false
-    fun needsRecalibration(): Boolean = needsRecalibration
-
     // ===== STATI =====
     private enum class State { SEARCH, DETECTION, FREEZE, VERIFY_GROUND, GROUND_LOCK }
     private var state = State.SEARCH
@@ -245,7 +242,6 @@ class GroundTracker {
     private var isCoilMoving = false
     private var lastMotionUpdateTimeMs = 0L
     private var minMotionDurationForTrackingMs = 500L
-    private var bypassMotionCheck = false
 
     // FIX: senza tolleranza, ogni breve stop rilevato dal sensore (es. inversione di
     // spazzolata che scende per un istante sotto la soglia OFF) faceva ripartire da zero
@@ -439,7 +435,7 @@ class GroundTracker {
                     if (groundSampleCount >= minGroundSampleCountForCorrection) {
                         val avgDelta = groundAccumulatedDelta / groundSampleCount
                         if (abs(avgDelta) > 0.0001f) {
-                            applyCorrection(avgDelta, nowMs)
+                            applyCorrection(avgDelta, nowMs, threshold)
                         }
                         // Snapshot del centro come "buono" SOLO se il ciclo appena concluso
                         // ha mantenuto una qualità di tracking alta: è il punto a cui
@@ -507,7 +503,7 @@ class GroundTracker {
     // il budget ciclo dopo ciclo per minuti, la fa scorrere gradualmente.
     var originLeakRate = 0.1f
 
-    private fun applyCorrection(avgDelta: Float, nowMs: Long) {
+    private fun applyCorrection(avgDelta: Float, nowMs: Long, threshold: Float) {
         val rawStep = alphaCorrection * avgDelta
         val dtSec = if (lastUpdateTimeMs == 0L) 0.01f else ((nowMs - lastUpdateTimeMs) / 1000f).coerceIn(0f, 1f)
         lastUpdateTimeMs = nowMs
@@ -516,6 +512,24 @@ class GroundTracker {
 
         val proposedRadial = centerRadial + limitedStep
         val proposedDrift = proposedRadial - originRadial
+
+        // FIX (bug "impazzisce dopo un po' anche con G.ID/G.SET allineati"): maxDriftFromOrigin
+        // (60) e maxAbsoluteDriftFromPumping (180) restavano tarati sulla scala ADC grezza di
+        // fondo scala (vedi commento in testa al file), NON sulla soglia di rilevazione reale
+        // (threshold, tipicamente ~0.5-5, cioè 10-300 volte più piccola). Risultato: una
+        // contaminazione della baseline che si accumula ciclo dopo ciclo (coda residua di un
+        // target che non si è ancora del tutto assestata prima che VERIFY_GROUND ricominci a
+        // mediare) restava per decine di correzioni ben dentro i due budget "assoluti" prima
+        // di essere fermata — nel frattempo il rumore di fondo normale iniziava a leggersi
+        // come target. Stesso rapporto già usato dall'autore per derivare le due costanti
+        // originali (40x e 120x stableMovementThreshold) applicato qui in modo DINAMICO alla
+        // soglia reale corrente, come già fatto per dynamicStabilityLimit/dynamicStepLimit:
+        // il tetto effettivo è il minimo tra la costante originale e la versione scalata sulla
+        // sensibilità attuale, quindi non si allarga mai oltre il valore già validato, ma si
+        // stringe quando la soglia reale è molto più piccola della scala ADC di fondo.
+        val dynamicStabilityLimit = min(stableMovementThreshold, threshold * groundStabilityThresholdFraction)
+        val effectiveMaxDriftFromOrigin = min(maxDriftFromOrigin, dynamicStabilityLimit * 40f)
+        val effectiveMaxAbsoluteDriftFromPumping = min(maxAbsoluteDriftFromPumping, dynamicStabilityLimit * 120f)
 
         // FIX STRUTTURALE (elimina il plateau permanente): la versione precedente, quando
         // |proposedDrift| superava maxDriftFromOrigin, PINNAVA il centro a
@@ -538,16 +552,16 @@ class GroundTracker {
         // che ripropone lo stesso eccesso ciclo dopo ciclo per minuti, la fa scorrere
         // gradualmente — il budget non si esaurisce mai in modo permanente.
         val newRadial: Float
-        if (abs(proposedDrift) > maxDriftFromOrigin) {
-            val excess = abs(proposedDrift) - maxDriftFromOrigin
+        if (abs(proposedDrift) > effectiveMaxDriftFromOrigin) {
+            val excess = abs(proposedDrift) - effectiveMaxDriftFromOrigin
             originRadial += excess * originLeakRate * sign(proposedDrift)
             // Ricalcola il drift rispetto alla nuova origine (già scivolata) e applica
             // comunque un tetto di sicurezza istantaneo: anche con l'origine a
             // scorrimento, un singolo ciclo non deve mai spostare il centro oltre
-            // maxDriftFromOrigin dall'origine corrente in un colpo solo.
+            // effectiveMaxDriftFromOrigin dall'origine corrente in un colpo solo.
             val driftFromNewOrigin = proposedRadial - originRadial
-            newRadial = if (abs(driftFromNewOrigin) > maxDriftFromOrigin) {
-                originRadial + maxDriftFromOrigin * sign(driftFromNewOrigin)
+            newRadial = if (abs(driftFromNewOrigin) > effectiveMaxDriftFromOrigin) {
+                originRadial + effectiveMaxDriftFromOrigin * sign(driftFromNewOrigin)
             } else {
                 proposedRadial
             }
@@ -560,11 +574,11 @@ class GroundTracker {
         // FIX: tetto assoluto rispetto al Pumping, indipendente da originRadial (che
         // con originLeakRate può scivolare senza limite per inseguire una deriva
         // geologica genuina). Anche una deriva "legittima" ciclo dopo ciclo non deve
-        // MAI allontanare il centro oltre maxAbsoluteDriftFromPumping dal valore
+        // MAI allontanare il centro oltre effectiveMaxAbsoluteDriftFromPumping dal valore
         // misurato al Pumping: oltre quel punto è più probabile un accumulo di
         // contaminazione (target deboli assorbiti in GROUND_LOCK) che vero terreno.
-        val cappedRadial = if (abs(newRadial - pumpingAnchorRadial) > maxAbsoluteDriftFromPumping) {
-            pumpingAnchorRadial + maxAbsoluteDriftFromPumping * sign(newRadial - pumpingAnchorRadial)
+        val cappedRadial = if (abs(newRadial - pumpingAnchorRadial) > effectiveMaxAbsoluteDriftFromPumping) {
+            pumpingAnchorRadial + effectiveMaxAbsoluteDriftFromPumping * sign(newRadial - pumpingAnchorRadial)
         } else {
             newRadial
         }
@@ -576,7 +590,14 @@ class GroundTracker {
         updateCount++
 
         if (abs(limitedStep) > 1e-8f) {
-            val normReference = max(stableMovementThreshold, 0.01f)
+            // FIX: normReference era la costante fissa stableMovementThreshold (1.5, scala
+            // ADC di fondo), scollegata dalla soglia di rilevazione reale — una correzione
+            // grande solo RELATIVAMENTE alla sensibilità attuale (quindi già sospetta)
+            // riceveva comunque un punteggio di qualità alto, e trackingQuality è proprio
+            // il valore che decide se lastGoodCenter* viene aggiornato come "checkpoint
+            // buono" (vedi sotto): un checkpoint validato con un metro sbagliato non
+            // protegge da nulla. Stessa scala dinamica di dynamicStabilityLimit.
+            val normReference = max(dynamicStabilityLimit, 0.01f)
             val normalizedError = (abs(avgDelta) / normReference).coerceIn(0f, 1f)
             val instantQuality = 1f - normalizedError
             trackingQuality = trackingQuality + 0.1f * (instantQuality - trackingQuality)
@@ -627,7 +648,7 @@ class GroundTracker {
         staticSampleCount++
 
         if (staticSampleCount >= minVerifySampleCount) {
-            finalizeStaticRecovery(nowMs)
+            finalizeStaticRecovery(nowMs, threshold)
         }
     }
 
@@ -637,13 +658,17 @@ class GroundTracker {
      * statico confermato da IMU + verifica a N campioni non deve MAI spostare il centro
      * oltre quel limite dal riferimento misurato al Pumping.
      */
-    private fun finalizeStaticRecovery(nowMs: Long) {
+    private fun finalizeStaticRecovery(nowMs: Long, threshold: Float) {
         val avgI = staticAccumI / staticSampleCount
         val avgQ = staticAccumQ / staticSampleCount
         val avgRadial = avgI * axisCos + avgQ * axisSin
 
-        val cappedRadial = if (abs(avgRadial - pumpingAnchorRadial) > maxAbsoluteDriftFromPumping) {
-            pumpingAnchorRadial + maxAbsoluteDriftFromPumping * sign(avgRadial - pumpingAnchorRadial)
+        // Stesso tetto dinamico di applyCorrection(): scalato sulla soglia di rilevazione
+        // reale, non sulla scala ADC grezza (vedi commento lì).
+        val dynamicStabilityLimit = min(stableMovementThreshold, threshold * groundStabilityThresholdFraction)
+        val effectiveMaxAbsoluteDriftFromPumping = min(maxAbsoluteDriftFromPumping, dynamicStabilityLimit * 120f)
+        val cappedRadial = if (abs(avgRadial - pumpingAnchorRadial) > effectiveMaxAbsoluteDriftFromPumping) {
+            pumpingAnchorRadial + effectiveMaxAbsoluteDriftFromPumping * sign(avgRadial - pumpingAnchorRadial)
         } else {
             avgRadial
         }
@@ -742,14 +767,9 @@ class GroundTracker {
     }
 
     private fun isCoilMovingValid(nowMs: Long): Boolean {
-        if (bypassMotionCheck) return true
         if (!isCoilMoving && (nowMs - lastStopTimeMs) > motionGapToleranceMs) return false
         if (lastMotionUpdateTimeMs == 0L) return false
         return (nowMs - lastMotionUpdateTimeMs) >= minMotionDurationForTrackingMs
-    }
-
-    fun setBypassMotionCheck(bypass: Boolean) {
-        bypassMotionCheck = bypass
     }
 
     // =============================================================
@@ -791,7 +811,6 @@ class GroundTracker {
         this.lastGoodCenterI = this.centerI
         this.lastGoodCenterQ = this.centerQ
         this.hasLastGoodCenter = true
-        this.needsRecalibration = false
         this.recentRecoveryTimestampsMs.clear()
 
         this.trackingQuality = 1f
@@ -812,39 +831,46 @@ class GroundTracker {
         isCoilMoving = false
         lastMotionUpdateTimeMs = 0L
         lastStopTimeMs = 0L
-        bypassMotionCheck = false
         recentGapDurationsMs.clear()
         lastToleranceRecalcMs = 0L
     }
 
     fun getGroundAngleDeg(): Float = axisDeg
-    fun getGroundAxisCos(): Float = axisCos
-    fun getGroundAxisSin(): Float = axisSin
     fun getCenter(): IQVector = IQVector(centerI, centerQ)
     fun getTrackingQuality(): Float = trackingQuality
     fun hasGroundAxis(): Boolean = hasAxis
     fun isTracking(): Boolean = hasAxis
     fun getUpdateCount(): Long = updateCount
     fun getLastRadialDelta(): Float = lastRadialDelta
-    fun isFrozen(): Boolean = state == State.FREEZE || state == State.DETECTION
     fun isDriftLimitReached(): Boolean = driftLimitReached
     fun getDriftFromOrigin(): Float = centerRadial - originRadial
 
     /**
-     * @deprecated Sposta solo il budget di deriva (originRadial), non il centro
-     * tracciato (centerRadial). Se centerRadial è già corrotto (causa più probabile
-     * quando questo viene chiamato da un failsafe di "detection bloccata"), il
-     * problema si ripresenta al campione successivo. Usare requestBaselineRecovery(),
-     * che gestisce anche il ripristino dell'ultimo centro buono e l'eventuale
-     * disattivazione del tracking in caso di recuperi ripetuti ravvicinati.
+     * FIX (bug "l'Auto-Tracking resta corrotto dopo pausa/ripresa"): riattivare
+     * l'Auto-Tracking (toggleAutoGroundTracking) riprendeva la macchina a stati
+     * esattamente da dove era rimasta alla disattivazione — se a quel momento
+     * driftLimitReached era già true, o lo stato era GROUND_LOCK con un budget di
+     * deriva ormai quasi esaurito, la ripresa ereditava lo stesso problema invece
+     * di ripartire pulita. NON è un recupero da corruzione reale (per quello c'è
+     * requestBaselineRecovery, con la sua contabilità di recuperi ravvicinati):
+     * qui la baseline non è considerata guasta, si vuole solo dare alla macchina a
+     * stati un punto di partenza pulito (SEARCH, budget di deriva riancorato al
+     * centro attuale) ogni volta che il tracking riprende dopo una pausa
+     * dell'utente. NON tocca axisDeg/pumpingAnchorRadial/lastGoodCenter* (il
+     * Pumping resta esattamente quello che era) e NON conta come un recupero ai
+     * fini di recoveryEscalationCount/recoveryDisableCount — un utente che mette
+     * in pausa e riprende l'Auto-Tracking più volte non deve mai, da solo,
+     * innescare la richiesta di un nuovo Pumping.
      */
-    @Deprecated(
-        "Non corregge un centro corrotto, solo il budget di deriva. Usa requestBaselineRecovery().",
-        ReplaceWith("requestBaselineRecovery()")
-    )
-    fun reanchorDriftOrigin() {
+    fun reanchorForResume() {
+        if (!hasAxis) return
         originRadial = centerRadial
         driftLimitReached = false
+        state = State.SEARCH
+        stateEnterTimeMs = 0L
+        resetVerification()
+        groundAccumulatedDelta = 0f
+        groundSampleCount = 0
     }
 
     /**
@@ -855,7 +881,7 @@ class GroundTracker {
      * maxAbsoluteDriftFromPumping per la logica completa.
      *
      * Ritorna true se il tracking resta attivo dopo il recupero, false se è stato
-     * disattivato e serve una nuova calibrazione (vedi needsRecalibration()).
+     * disattivato e serve una nuova calibrazione.
      */
     fun requestBaselineRecovery(nowMs: Long = System.currentTimeMillis()): Boolean {
         recentRecoveryTimestampsMs.addLast(nowMs)
@@ -871,7 +897,6 @@ class GroundTracker {
             // Meglio fermarsi qui e chiedere un nuovo Pumping che continuare a
             // "recuperare" un centro che evidentemente non tiene.
             android.util.Log.d("GroundTracker", "🛑 Troppi recuperi ravvicinati ($recentCount in ${recoveryWindowMs}ms): tracking disattivato, serve nuova calibrazione")
-            needsRecalibration = true
             hasAxis = false
             return false
         }
@@ -896,7 +921,6 @@ class GroundTracker {
     // "GROUND_LOCK" era un confronto su stringa magica, non protetto dal compilatore in
     // caso di rename/aggiunta di uno stato in State.
     fun isGroundLocked(): Boolean = state == State.GROUND_LOCK
-    fun isCoilMoving(): Boolean = isCoilMoving
 
     fun reset() {
         axisDeg = 0f
@@ -918,7 +942,6 @@ class GroundTracker {
         detectionHoldStartMs = 0L
         staticRecoveryPending = false
         resetStaticRecoveryAccumulator()
-        bypassMotionCheck = false
         previousRadialDeltaInLock = 0f
 
         state = State.SEARCH
@@ -931,7 +954,6 @@ class GroundTracker {
 
         pumpingAnchorRadial = 0f
         hasLastGoodCenter = false
-        needsRecalibration = false
         recentRecoveryTimestampsMs.clear()
     }
 }

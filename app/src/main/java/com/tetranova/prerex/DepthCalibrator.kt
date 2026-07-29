@@ -64,19 +64,13 @@ class DepthCalibrator {
         val sharpness: Float,
         val normalizedEnergy: Float,
         val vdi: Int,
-        val confidence: Float,
-        val threshold: Float,
         val timestamp: Long,
         val notes: String = ""
     )
 
     data class CalibrationResult(
         val success: Boolean,
-        val message: String,
-        val fingerprints: List<TargetFingerprint> = emptyList(),
-        val calibratedDepthScale: Float = 55f,
-        val calibratedDepthDecay: Float = 0.22f,
-        val fitQuality: Float = 0f
+        val message: String
     )
 
     private val mutex = Mutex()
@@ -87,19 +81,8 @@ class DepthCalibrator {
     private var currentCalibrationDepth: Float = 0f
     private val calibrationSamples = mutableListOf<CalibrationSample>()
 
-    private var calibratedDepthScale = 55f
-    private var calibratedDepthDecay = 0.22f
     private var fitQuality = 0f
     private var isCalibrated = false
-
-    private val featureWeights = mapOf(
-        "signalRatio" to 0.25f,
-        "fwhm" to 0.15f,
-        "area" to 0.15f,
-        "centroid" to 0.10f,
-        "sharpness" to 0.15f,
-        "normalizedEnergy" to 0.20f
-    )
 
     private data class CalibrationSample(
         val signalRatio: Float,
@@ -110,8 +93,7 @@ class DepthCalibrator {
         val maxSlope: Float,
         val sharpness: Float,
         val normalizedEnergy: Float,
-        val vdi: Int,
-        val confidence: Float
+        val vdi: Int
     )
 
     companion object {
@@ -140,8 +122,6 @@ class DepthCalibrator {
                 obj.put("sharpness", fp.sharpness.toDouble())
                 obj.put("normalizedEnergy", fp.normalizedEnergy.toDouble())
                 obj.put("vdi", fp.vdi)
-                obj.put("confidence", fp.confidence.toDouble())
-                obj.put("threshold", fp.threshold.toDouble())
                 obj.put("timestamp", fp.timestamp)
                 obj.put("notes", fp.notes)
                 jsonArray.put(obj)
@@ -180,8 +160,6 @@ class DepthCalibrator {
                     sharpness = obj.getDouble("sharpness").toFloat(),
                     normalizedEnergy = obj.getDouble("normalizedEnergy").toFloat(),
                     vdi = obj.getInt("vdi"),
-                    confidence = obj.getDouble("confidence").toFloat(),
-                    threshold = obj.getDouble("threshold").toFloat(),
                     timestamp = obj.getLong("timestamp"),
                     notes = obj.optString("notes", "")
                 )
@@ -280,31 +258,20 @@ class DepthCalibrator {
 
         if (bestMatch == null || bestSimilarity < 0.3f) return null
 
-        val estimatedDepth = if (isCalibrated) {
-            calibratedDepthScale * exp(-calibratedDepthDecay * signalRatio)
-        } else {
-            fingerprints.map { it.depthCm }.average().toFloat()
-        }
-
         return TargetPrediction(
             fingerprint = bestMatch,
-            similarity = (bestSimilarity * 100f).coerceIn(0f, 100f),
-            estimatedDepth = estimatedDepth.coerceIn(0f, 75f),
-            confidence = (50f + bestSimilarity * 50f).coerceIn(0f, 100f)
+            similarity = (bestSimilarity * 100f).coerceIn(0f, 100f)
         )
     }
 
     data class TargetPrediction(
         val fingerprint: TargetFingerprint,
-        val similarity: Float,
-        val estimatedDepth: Float,
-        val confidence: Float
+        val similarity: Float
     )
 
     suspend fun addCalibrationSample(
         eventFeatures: DepthAnalyzer.EventFeatures,
         vdi: Int,
-        confidence: Float,
         threshold: Float,
         context: Context? = null
     ): CalibrationResult? = mutex.withLock {
@@ -319,8 +286,7 @@ class DepthCalibrator {
             maxSlope = eventFeatures.maxSlope,
             sharpness = eventFeatures.sharpness,
             normalizedEnergy = eventFeatures.normalizedEnergy,
-            vdi = vdi,
-            confidence = confidence
+            vdi = vdi
         )
 
         calibrationSamples.add(sample)
@@ -360,7 +326,6 @@ class DepthCalibrator {
         val avgMeanSlope = calibrationSamples.map { it.meanSlope }.average().toFloat()
         val avgMaxSlope = calibrationSamples.map { it.maxSlope }.average().toFloat()
         val avgVdi = calibrationSamples.map { it.vdi }.average().toInt()
-        val avgConfidence = calibrationSamples.map { it.confidence }.average().toFloat()
 
         val now = System.currentTimeMillis()
         val newFingerprint = TargetFingerprint(
@@ -377,8 +342,6 @@ class DepthCalibrator {
             sharpness = avgSharpness,
             normalizedEnergy = avgEnergy,
             vdi = avgVdi,
-            confidence = avgConfidence,
-            threshold = 1.0f,
             timestamp = now,
             notes = ""
         )
@@ -411,11 +374,7 @@ class DepthCalibrator {
 
         return CalibrationResult(
             success = true,
-            message = "$msg\n📊 Impronte totali: ${fingerprints.size}",
-            fingerprints = fingerprints,
-            calibratedDepthScale = calibratedDepthScale,
-            calibratedDepthDecay = calibratedDepthDecay,
-            fitQuality = fitQuality
+            message = "$msg\n📊 Impronte totali: ${fingerprints.size}"
         )
     }
 
@@ -473,11 +432,6 @@ class DepthCalibrator {
             fitQuality = 0f
             return
         }
-
-        val safeIntercept = intercept.coerceAtMost(5.3f)
-
-        calibratedDepthScale = exp(safeIntercept)
-        calibratedDepthDecay = -slope
 
         val yMean = sumY / n
         var ssTot = 0f

@@ -43,17 +43,9 @@ class DepthAnalyzer {
 
     data class DepthResult(
         val depth: Float,
-        val confidence: Float,
-        val quality: Float,
-        val source: DepthSource,
         val isTracking: Boolean,
         val features: EventFeatures? = null
     )
-
-    enum class DepthSource {
-        LIVE,
-        EVENT
-    }
 
     companion object FeatureExtractor {
         fun calculateFWHM(samples: List<Float>, peakIndex: Int, peakAmplitude: Float): Float {
@@ -252,9 +244,6 @@ class DepthAnalyzer {
             if (displayedDepth > 0.1f) displayedDepth = 0f
             return DepthResult(
                 depth = 0f,
-                confidence = 0f,
-                quality = 0f,
-                source = DepthSource.EVENT,
                 isTracking = false,
                 features = null
             )
@@ -343,29 +332,8 @@ class DepthAnalyzer {
         // ═══════════════════════════════════════════════════════════
         val featuresForThisCall = if (isDepthFinalized) lastEventFeatures else null
 
-        val source = if (isTrackingEvent) DepthSource.LIVE else DepthSource.EVENT
-        val confidencePercent = if (isTrackingEvent) {
-            (40f + 0.5f * confidence).coerceIn(0f, 100f)
-        } else {
-            (60f + 0.4f * confidence).coerceIn(0f, 100f)
-        }
-
-        val quality = if (isDepthFinalized && lastEventFeatures != null) {
-            val f = lastEventFeatures!!
-            var q = 60f
-            if (f.fwhm in 2f..12f) q += 15f
-            if (f.centroid in 0.25f..0.75f) q += 15f
-            if (f.area > 0.1f) q += 10f
-            q.coerceIn(0f, 100f)
-        } else {
-            if (isTrackingEvent) 40f else 0f
-        }
-
         val result = DepthResult(
             depth = displayedDepth,
-            confidence = confidencePercent,
-            quality = quality,
-            source = source,
             isTracking = isTrackingEvent,
             features = featuresForThisCall
         )

@@ -122,9 +122,6 @@ class GroundCalibrator {
         restMax = -Float.MAX_VALUE
     }
 
-    /** Alias esplicito di startAccumulation(), per chi si aspetta un nome reset(). */
-    fun reset() = startAccumulation()
-
     /**
      * Aggiunge un campione e restituisce una diagnostica provvisoria.
      * Ora il pumping non è più "a scatola chiusa": la UI può mostrare
